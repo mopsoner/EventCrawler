@@ -1,0 +1,17 @@
+<!doctype html>
+<html><body>
+<h1>EventCrawler Dashboard</h1>
+<ul>
+  <li>Events: {{ stats.events }}</li>
+  <li>Products: {{ stats.products }}</li>
+  <li>Free products: {{ stats.free_products }}</li>
+  <li>Free available: {{ stats.free_available }}</li>
+  <li>Last crawl: {{ stats.last_seen_at }}</li>
+</ul>
+<p>
+  <a href="/events">Events</a> |
+  <a href="/free">Free products</a> |
+  <a href="/patterns">Learned patterns</a> |
+  <a href="/runs">Extraction runs</a>
+</p>
+</body></html>
