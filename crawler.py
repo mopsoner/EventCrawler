@@ -1,6 +1,9 @@
+import json
+import os
 import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from urllib.parse import urljoin
 
 import requests
@@ -13,10 +16,16 @@ BASE_URL = "https://www.bizouk.com"
 EVENT_URL_RE = re.compile(r"/events/details/([^/]+)/(?P<id>\d+)")
 DATE_HINT_RE = re.compile(r"(\b20\d{2}\b|janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre|january|february|march|april|may|june|july|august|september|october|november|december|\bam\b|\bpm\b)", re.I)
 URL_RE = re.compile(r"https?://[^\s]+", re.I)
+STATUS_PATH = Path("data/crawl_status.json")
 CONFIG = load_config()
 HEADERS = {"User-Agent": CONFIG.get("user_agent", "Mozilla/5.0")}
 MAX_WORKERS = int(CONFIG.get("max_workers", 6))
 REQUEST_TIMEOUT = int(CONFIG.get("request_timeout", 45))
+
+
+def save_status(data):
+    STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STATUS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def enabled_regions():
@@ -24,6 +33,10 @@ def enabled_regions():
     for name, region in CONFIG.get("regions", {}).items():
         if region.get("enabled") and region.get("url"):
             regions[name] = region["url"]
+    selected = os.getenv("EVENTCRAWLER_SELECTED_REGIONS", "").strip()
+    if selected:
+        wanted = {x.strip() for x in selected.split(",") if x.strip()}
+        regions = {k: v for k, v in regions.items() if k in wanted}
     return regions
 
 
@@ -360,32 +373,40 @@ def upsert_event(event):
 def run():
     init_db()
     regions = enabled_regions()
+    selected = list(regions.keys())
+    save_status({"running": True, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": __import__('datetime').datetime.utcnow().isoformat(), "finished_at": None, "last_error": None})
     all_items = []
-    for region, start_url in regions.items():
-        try:
-            html = fetch_html(start_url)
-            region_items = extract_event_links(html)
-            for item in region_items:
-                item["region"] = region
-            all_items.extend(region_items)
-            print(f"[INFO] {region}: {len(region_items)} events queued")
-        except Exception as exc:
-            print(f"[ERROR] region {region}: {exc}")
-
-    if not all_items:
-        print("[INFO] No events found")
-        return
-
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(worker, item): item for item in all_items}
-        for future in as_completed(futures):
-            item = futures[future]
+    try:
+        for region, start_url in regions.items():
             try:
-                event = future.result()
-                upsert_event(event)
-                print(f"[OK] {item['region']} -> {item['external_id']} -> {item['url']}")
+                html = fetch_html(start_url)
+                region_items = extract_event_links(html)
+                for item in region_items:
+                    item["region"] = region
+                all_items.extend(region_items)
+                print(f"[INFO] {region}: {len(region_items)} events queued")
             except Exception as exc:
-                print(f"[ERROR] event {item['url']}: {exc}")
+                print(f"[ERROR] region {region}: {exc}")
+
+        if not all_items:
+            print("[INFO] No events found")
+            save_status({"running": False, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": __import__('datetime').datetime.utcnow().isoformat(), "finished_at": __import__('datetime').datetime.utcnow().isoformat(), "last_error": "No events found"})
+            return
+
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = {executor.submit(worker, item): item for item in all_items}
+            for future in as_completed(futures):
+                item = futures[future]
+                try:
+                    event = future.result()
+                    upsert_event(event)
+                    print(f"[OK] {item['region']} -> {item['external_id']} -> {item['url']}")
+                except Exception as exc:
+                    print(f"[ERROR] event {item['url']}: {exc}")
+        save_status({"running": False, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": None, "finished_at": __import__('datetime').datetime.utcnow().isoformat(), "last_error": None})
+    except Exception as exc:
+        save_status({"running": False, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": None, "finished_at": __import__('datetime').datetime.utcnow().isoformat(), "last_error": str(exc)})
+        raise
 
 
 if __name__ == "__main__":
