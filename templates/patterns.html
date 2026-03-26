@@ -1,0 +1,11 @@
+<!doctype html>
+<html><body>
+<h1>Learned Patterns</h1>
+<p><a href="/">Dashboard</a></p>
+<table border="1">
+<tr><th>Page type</th><th>Name</th><th>Value</th><th>Confidence</th><th>Updated</th></tr>
+{% for p in patterns %}
+<tr><td>{{ p.page_type }}</td><td>{{ p.pattern_name }}</td><td>{{ p.pattern_value }}</td><td>{{ p.confidence }}</td><td>{{ p.updated_at }}</td></tr>
+{% endfor %}
+</table>
+</body></html>
