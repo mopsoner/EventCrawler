@@ -1,188 +1,213 @@
-import asyncio
 import re
+import sqlite3
 from urllib.parse import urljoin
-from playwright.async_api import async_playwright
-from ai_extractor import ai_extract_from_snapshot
-from ai_navigator import choose_event_links
-from config import REGIONS, BASE_URL, HEADLESS, EXTRACTION_MODE
-from confidence import compute_confidence
-from db import init_db, upsert_event, save_page_snapshot, log_extraction_run
-from page_snapshot import build_page_snapshot
-from scoring import compute_score
-from validator import validate_event_payload
 
-UNAVAILABLE_WORDS = ["épuisé", "epuise", "sold out", "indisponible", "complet", "closed"]
-AVAILABLE_WORDS = ["réserver", "reserver", "acheter", "commander", "ajouter", "prendre", "s'inscrire", "inscription"]
+import requests
+from bs4 import BeautifulSoup
 
+DB_PATH = "data/eventcrawler.sqlite"
+BASE_URL = "https://www.bizouk.com"
+REGIONS = {
+    "london": "https://www.bizouk.com/?region=london",
+    "guadeloupe": "https://www.bizouk.com/?region=guadeloupe",
+    "paris": "https://www.bizouk.com/?region=paris",
+    "rotterdam": "https://www.bizouk.com/?region=rotterdam",
+}
+HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-def normalize_text(text: str) -> str:
+def conn():
+    c = sqlite3.connect(DB_PATH)
+    c.row_factory = sqlite3.Row
+    return c
+
+def init_db():
+    c = conn()
+    c.executescript(
+        '''
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_url TEXT UNIQUE NOT NULL,
+            region TEXT,
+            name TEXT,
+            event_date TEXT,
+            city TEXT,
+            address TEXT,
+            contact_phone TEXT,
+            contact_email TEXT,
+            score INTEGER DEFAULT 0,
+            first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id INTEGER NOT NULL,
+            product_name TEXT NOT NULL,
+            price_text TEXT,
+            numeric_price REAL,
+            is_free INTEGER DEFAULT 0,
+            is_available INTEGER,
+            first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(event_id, product_name, price_text)
+        );
+        '''
+    )
+    c.commit()
+    c.close()
+
+def normalize_text(text):
     return re.sub(r"\\s+", " ", (text or "").strip().lower())
 
-
-def parse_price(text: str):
+def parse_price(text):
     if not text:
         return None
     t = text.strip().lower().replace(",", ".")
     if "gratuit" in t or "free" in t:
         return 0.0
-    m = re.search(r'(\\d+(?:\\.\\d+)?)\\s*€', t)
+    m = re.search(r"(\\d+(?:\\.\\d+)?)\\s*€", t)
     return float(m.group(1)) if m else None
 
-
-def extract_email(text: str):
-    m = re.search(r'([A-Z0-9._%+\\-]+@[A-Z0-9.\\-]+\\.[A-Z]{2,})', text, re.I)
+def extract_email(text):
+    m = re.search(r"([A-Z0-9._%+\\-]+@[A-Z0-9.\\-]+\\.[A-Z]{2,})", text, re.I)
     return m.group(1) if m else None
 
+def extract_phone(text):
+    m = re.search(r"(\\+?\\d[\\d\\s().-]{7,}\\d)", text)
+    return re.sub(r"\\s+", " ", m.group(1)).strip() if m else None
 
-def extract_phone(text: str):
-    m = re.search(r'(\\+?\\d[\\d\\s().-]{7,}\\d)', text)
-    return re.sub(r'\\s+', ' ', m.group(1)).strip() if m else None
+def score_event(name, region, products):
+    score = 0
+    low = (name or "").lower()
+    if "carnaval" in low or "carnival" in low:
+        score += 30
+    if region in {"london", "rotterdam", "paris"}:
+        score += 20
+    if any(p.get("is_free") for p in products):
+        score += 15
+    if any(p.get("is_free") and p.get("is_available") is True for p in products):
+        score += 25
+    return min(score, 100)
 
+def fetch_html(url):
+    r = requests.get(url, headers=HEADERS, timeout=45)
+    r.raise_for_status()
+    return r.text
 
-async def extract_event_links(page):
-    hrefs = await page.locator("a[href*='/events/details/']").evaluate_all("els => els.map(a => a.href).filter(Boolean)")
-    if hrefs:
-        return sorted(set(hrefs))
-    candidates = []
-    return sorted(set(choose_event_links(candidates)))
+def extract_event_links(html):
+    soup = BeautifulSoup(html, "html.parser")
+    out = []
+    for a in soup.select("a[href]"):
+        href = a.get("href") or ""
+        if "/events/details/" in href:
+            out.append(urljoin(BASE_URL, href))
+    return sorted(set(out))
 
-
-async def extract_flyers(page):
-    imgs = page.locator("img")
-    flyers = []
-    for i in range(await imgs.count()):
-        img = imgs.nth(i)
-        src = await img.get_attribute("src")
-        alt = await img.get_attribute("alt")
-        if src:
-            full = urljoin(BASE_URL, src)
-            ref = ((alt or "") + " " + full).lower()
-            if "flyer" in ref or "affiche" in ref:
-                flyers.append(full)
-    return sorted(set(flyers))
-
-
-async def extract_products(page):
-    products = []
-    blocks = page.locator("div, li, article")
-    seen = set()
-    for i in range(await blocks.count()):
-        block = blocks.nth(i)
-        try:
-            text = await block.inner_text(timeout=600)
-        except Exception:
+def extract_products(text):
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    out, seen = [], set()
+    for i, line in enumerate(lines):
+        price = parse_price(line)
+        if price is None:
             continue
-        norm = normalize_text(text)
-        if not text or ("€" not in text and "gratuit" not in norm and "free" not in norm):
+        name = None
+        for back in range(1, 5):
+            if i - back >= 0:
+                cand = lines[i - back]
+                if parse_price(cand) is None and len(cand) < 120:
+                    name = cand
+                    break
+        if not name:
             continue
-        lines = [x.strip() for x in text.splitlines() if x.strip()]
-        if not lines:
-            continue
-        price_text = next((line for line in lines if parse_price(line) is not None or "gratuit" in line.lower() or "free" in line.lower()), None)
-        product_name = next((line for line in lines if parse_price(line) is None and len(line) < 120), None)
-        if not product_name or not price_text:
-            continue
-        numeric_price = parse_price(price_text)
-        is_free = numeric_price == 0.0
+        around = normalize_text(" ".join(lines[i:i+6]))
         is_available = None
-        availability_text = None
-        if any(word in norm for word in UNAVAILABLE_WORDS):
+        if any(w in around for w in ["épuisé", "epuise", "sold out", "indisponible", "complet"]):
             is_available = False
-            availability_text = "unavailable_text"
-        elif any(word in norm for word in AVAILABLE_WORDS):
+        elif any(w in around for w in ["réserver", "reserver", "acheter", "ajouter", "inscription", "prendre"]):
             is_available = True
-            availability_text = "available_action_text"
-        key = (product_name, price_text)
+        key = (name, line)
         if key in seen:
             continue
         seen.add(key)
-        products.append({
-            "product_name": product_name,
-            "price_text": price_text,
-            "numeric_price": numeric_price,
-            "is_free": is_free,
+        out.append({
+            "product_name": name,
+            "price_text": line,
+            "numeric_price": price,
+            "is_free": price == 0.0,
             "is_available": is_available,
-            "availability_text": availability_text,
-            "details": " | ".join(lines[:10]),
         })
-    return products
+    return out
 
+def upsert_event(event):
+    c = conn()
+    cur = c.cursor()
+    cur.execute("SELECT id FROM events WHERE event_url = ?", (event["event_url"],))
+    row = cur.fetchone()
+    if row:
+        event_id = row["id"]
+        cur.execute(
+            "UPDATE events SET region=?, name=?, event_date=?, city=?, address=?, contact_phone=?, contact_email=?, score=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?",
+            (event.get("region"), event.get("name"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("score", 0), event_id),
+        )
+    else:
+        cur.execute(
+            "INSERT INTO events(event_url, region, name, event_date, city, address, contact_phone, contact_email, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (event["event_url"], event.get("region"), event.get("name"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("score", 0)),
+        )
+        event_id = cur.lastrowid
+    for p in event.get("products", []):
+        cur.execute("SELECT id FROM products WHERE event_id=? AND product_name=? AND price_text=?", (event_id, p.get("product_name"), p.get("price_text")))
+        old = cur.fetchone()
+        avail = 1 if p.get("is_available") is True else 0 if p.get("is_available") is False else None
+        if old:
+            cur.execute("UPDATE products SET numeric_price=?, is_free=?, is_available=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?", (p.get("numeric_price"), 1 if p.get("is_free") else 0, avail, old["id"]))
+        else:
+            cur.execute("INSERT INTO products(event_id, product_name, price_text, numeric_price, is_free, is_available) VALUES (?, ?, ?, ?, ?, ?)", (event_id, p.get("product_name"), p.get("price_text"), p.get("numeric_price"), 1 if p.get("is_free") else 0, avail))
+    c.commit()
+    c.close()
 
-async def extract_event_rule_based(page, event_url: str, region: str):
-    await page.goto(event_url, wait_until="networkidle", timeout=60000)
-    snapshot = await build_page_snapshot(page)
-    body_text = snapshot["body_text"]
-    lines = [line.strip() for line in body_text.splitlines() if line.strip()]
-    title = await page.title()
-    name = next((line for line in lines[:10] if len(line) > 4), title)
-    city = None
-    address = None
-    for line in lines[:40]:
-        if not city and any(x in line.lower() for x in ["londres", "london", "paris", "rotterdam", "guadeloupe"]):
-            city = line
+def extract_event(url, region):
+    html = fetch_html(url)
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text("\n", strip=True)
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    title = soup.title.get_text(" ", strip=True) if soup.title else url
+    name = next((x for x in lines[:20] if len(x) > 4 and "bizouk" not in x.lower()), title)
+    city, address = None, None
+    for cand in lines[:60]:
+        low = cand.lower()
+        if not city and any(k in low for k in ["londres", "london", "paris", "rotterdam", "guadeloupe"]):
+            city = cand
             continue
-        if not address and any(ch.isdigit() for ch in line) and len(line) > 8:
-            address = line
-            break
+        if not address and any(ch.isdigit() for ch in cand) and len(cand) > 8:
+            address = cand
+    products = extract_products(text)
     event = {
-        "event_url": event_url,
+        "event_url": url,
         "region": region,
         "name": name,
-        "subtitle": lines[1] if len(lines) > 1 else None,
-        "event_date": next((line for line in lines[:30] if any(tok in line.lower() for tok in ["2026", "2025", "janvier", "février", "mars", "april", "august", "août"])), None),
+        "event_date": next((x for x in lines[:40] if any(tok in x.lower() for tok in ["2026", "2025", "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre", "am", "pm"])), None),
         "city": city,
         "address": address,
-        "contact_phone": extract_phone(body_text),
-        "contact_email": extract_email(body_text),
-        "contact_website": None,
-        "google_maps_url": None,
-        "flyers": await extract_flyers(page),
-        "products": await extract_products(page),
-        "extraction_mode": "RULES",
+        "contact_phone": extract_phone(text),
+        "contact_email": extract_email(text),
+        "products": products,
+        "score": score_event(name, region, products),
     }
-    return event, snapshot
-
-
-async def process_event(page, event_url: str, region: str):
-    event, snapshot = await extract_event_rule_based(page, event_url, region)
-    confidence = compute_confidence(event)
-    validation = validate_event_payload(event)
-    if EXTRACTION_MODE in {"HYBRID", "AI_FIRST"} and (confidence < 60 or not validation["ok"]):
-        ai_data = ai_extract_from_snapshot(snapshot)
-        for key, value in ai_data.items():
-            if key == "products" and not event.get("products"):
-                event["products"] = value
-            elif key == "flyers" and not event.get("flyers"):
-                event["flyers"] = value
-            elif not event.get(key):
-                event[key] = value
-        event["extraction_mode"] = ai_data.get("extraction_mode", "AI_FALLBACK")
-        confidence = compute_confidence(event)
-        validation = validate_event_payload(event)
-    event["extraction_confidence"] = confidence
-    event["score"] = compute_score(event)
-    save_page_snapshot(event_url, "event_detail", snapshot)
-    log_extraction_run(event_url, event["extraction_mode"], confidence, validation["ok"], validation["issues"])
     upsert_event(event)
 
-
-async def run():
+def run():
     init_db()
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=HEADLESS)
-        page = await browser.new_page()
-        for region, url in REGIONS.items():
-            await page.goto(url, wait_until="networkidle", timeout=60000)
-            for link in await extract_event_links(page):
+    for region, start_url in REGIONS.items():
+        try:
+            html = fetch_html(start_url)
+            for link in extract_event_links(html):
                 try:
-                    event_page = await browser.new_page()
-                    await process_event(event_page, link, region)
-                    await event_page.close()
+                    extract_event(link, region)
                     print(f"[OK] {region} -> {link}")
                 except Exception as exc:
-                    print(f"[ERROR] {region} -> {link}: {exc}")
-        await browser.close()
-
+                    print(f"[ERROR] event {link}: {exc}")
+        except Exception as exc:
+            print(f"[ERROR] region {region}: {exc}")
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    run()

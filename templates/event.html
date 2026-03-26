@@ -1,0 +1,16 @@
+<!doctype html>
+<html><body>
+{% if event %}
+<h1>{{ event.name }}</h1>
+<p>{{ event.region }} | {{ event.city }} | {{ event.address }}</p>
+<p>{{ event.contact_phone }} {{ event.contact_email }}</p>
+<h2>Products</h2>
+<ul>
+{% for p in event.products %}
+<li>{{ p.product_name }} - {{ p.price_text }} - free={{ p.is_free }} - available={{ p.is_available }}</li>
+{% endfor %}
+</ul>
+{% else %}
+<p>Event not found</p>
+{% endif %}
+</body></html>
