@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+data/*.sqlite
+exports/*.json
+exports/*.csv
+playwright-report/
