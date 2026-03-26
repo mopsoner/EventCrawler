@@ -1,0 +1,15 @@
+<!doctype html>
+<html><body>
+{% if event %}
+<h1>{{ event.name }}</h1>
+<p>Region: {{ event.region }} | Score: {{ event.score }} | Mode: {{ event.extraction_mode }} | Confidence: {{ event.extraction_confidence }}</p>
+<p>{{ event.city }} - {{ event.address }}</p>
+<p>{{ event.contact_phone }} {{ event.contact_email }}</p>
+<h2>Flyers</h2>
+<ul>{% for f in event.flyers %}<li><a href="{{ f }}">{{ f }}</a></li>{% endfor %}</ul>
+<h2>Products</h2>
+<ul>{% for p in event.products %}<li>{{ p.product_name }} - {{ p.price_text }} - free={{ p.is_free }} - available={{ p.is_available }}</li>{% endfor %}</ul>
+{% else %}
+<p>Event not found</p>
+{% endif %}
+</body></html>
