@@ -1,5 +1,7 @@
+import os
 import re
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin
 
 import requests
@@ -17,6 +19,7 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 EVENT_URL_RE = re.compile(r"/events/details/([^/]+)/(?P<id>\d+)")
 DATE_HINT_RE = re.compile(r"(\b20\d{2}\b|janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre|january|february|march|april|may|june|july|august|september|october|november|december|\bam\b|\bpm\b)", re.I)
 URL_RE = re.compile(r"https?://[^\s]+", re.I)
+MAX_WORKERS = int(os.getenv("EVENTCRAWLER_MAX_WORKERS", "6"))
 
 
 def conn():
@@ -67,6 +70,7 @@ def init_db():
     ensure_column(cur, "events", "event_external_id", "event_external_id TEXT")
     ensure_column(cur, "events", "event_slug", "event_slug TEXT")
     ensure_column(cur, "events", "contact_website", "contact_website TEXT")
+    ensure_column(cur, "events", "event_image", "event_image TEXT")
     c.commit()
     c.close()
 
@@ -110,6 +114,21 @@ def extract_website(text):
     return None
 
 
+def extract_event_image(soup):
+    meta = soup.find("meta", attrs={"property": "og:image"})
+    if meta and meta.get("content"):
+        return urljoin(BASE_URL, meta.get("content"))
+    for img in soup.find_all("img"):
+        src = img.get("src") or ""
+        if not src:
+            continue
+        full = urljoin(BASE_URL, src)
+        low = full.lower()
+        if any(k in low for k in ["flyer", "affiche", "uploads", "/img/"]):
+            return full
+    return None
+
+
 def score_event(name, region, products):
     score = 0
     low = (name or "").lower()
@@ -124,8 +143,9 @@ def score_event(name, region, products):
     return min(score, 100)
 
 
-def fetch_html(url):
-    r = requests.get(url, headers=HEADERS, timeout=45)
+def fetch_html(url, session=None):
+    client = session or requests
+    r = client.get(url, headers=HEADERS, timeout=45)
     r.raise_for_status()
     return r.text
 
@@ -254,7 +274,7 @@ def extract_contact_info(lines):
     contact_lines = []
     for i, line in enumerate(lines):
         if line.lower() == "contact":
-            contact_lines = lines[i + 1:i + 8]
+            contact_lines = lines[i + 1:i + 10]
             break
     contact_text = "\n".join(contact_lines) if contact_lines else "\n".join(lines)
     return {
@@ -264,8 +284,12 @@ def extract_contact_info(lines):
     }
 
 
-def extract_event(url, region, slug=None, external_id=None):
-    html = fetch_html(url)
+def build_event_from_item(item, session=None):
+    url = item["url"]
+    region = item["region"]
+    slug = item.get("slug")
+    external_id = item.get("external_id")
+    html = fetch_html(url, session=session)
     soup = remove_noise(BeautifulSoup(html, "html.parser"))
     h1 = soup.find("h1")
     title = normalize_text(h1.get_text(" ", strip=True)) if h1 else (soup.title.get_text(" ", strip=True) if soup.title else url)
@@ -273,7 +297,7 @@ def extract_event(url, region, slug=None, external_id=None):
     name, event_date, venue, address, city = extract_event_core(lines, title)
     products = extract_products(lines)
     contact = extract_contact_info(lines)
-    event = {
+    return {
         "event_url": url,
         "event_slug": slug,
         "event_external_id": external_id,
@@ -285,10 +309,18 @@ def extract_event(url, region, slug=None, external_id=None):
         "contact_phone": contact["contact_phone"],
         "contact_email": contact["contact_email"],
         "contact_website": contact["contact_website"],
+        "event_image": extract_event_image(soup),
         "products": products,
         "score": score_event(name, region, products),
     }
-    upsert_event(event)
+
+
+def worker(item):
+    session = requests.Session()
+    try:
+        return build_event_from_item(item, session=session)
+    finally:
+        session.close()
 
 
 def upsert_event(event):
@@ -299,13 +331,13 @@ def upsert_event(event):
     if row:
         event_id = row["id"]
         cur.execute(
-            "UPDATE events SET event_external_id=?, event_slug=?, region=?, name=?, event_date=?, city=?, address=?, contact_phone=?, contact_email=?, contact_website=?, score=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?",
-            (event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("score", 0), event_id),
+            "UPDATE events SET event_external_id=?, event_slug=?, region=?, name=?, event_date=?, city=?, address=?, contact_phone=?, contact_email=?, contact_website=?, event_image=?, score=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?",
+            (event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0), event_id),
         )
     else:
         cur.execute(
-            "INSERT INTO events(event_url, event_external_id, event_slug, region, name, event_date, city, address, contact_phone, contact_email, contact_website, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (event["event_url"], event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("score", 0)),
+            "INSERT INTO events(event_url, event_external_id, event_slug, region, name, event_date, city, address, contact_phone, contact_email, contact_website, event_image, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (event["event_url"], event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0)),
         )
         event_id = cur.lastrowid
     for p in event.get("products", []):
@@ -322,17 +354,32 @@ def upsert_event(event):
 
 def run():
     init_db()
+    all_items = []
     for region, start_url in REGIONS.items():
         try:
             html = fetch_html(start_url)
-            for item in extract_event_links(html):
-                try:
-                    extract_event(item["url"], region, slug=item["slug"], external_id=item["external_id"])
-                    print(f"[OK] {region} -> {item['external_id']} -> {item['url']}")
-                except Exception as exc:
-                    print(f"[ERROR] event {item['url']}: {exc}")
+            region_items = extract_event_links(html)
+            for item in region_items:
+                item["region"] = region
+            all_items.extend(region_items)
+            print(f"[INFO] {region}: {len(region_items)} events queued")
         except Exception as exc:
             print(f"[ERROR] region {region}: {exc}")
+
+    if not all_items:
+        print("[INFO] No events found")
+        return
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {executor.submit(worker, item): item for item in all_items}
+        for future in as_completed(futures):
+            item = futures[future]
+            try:
+                event = future.result()
+                upsert_event(event)
+                print(f"[OK] {item['region']} -> {item['external_id']} -> {item['url']}")
+            except Exception as exc:
+                print(f"[ERROR] event {item['url']}: {exc}")
 
 
 if __name__ == "__main__":
