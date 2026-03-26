@@ -1,18 +1,98 @@
+import json
+import os
 import sqlite3
+import subprocess
+import threading
 from datetime import datetime, timedelta
+from pathlib import Path
 from flask import Flask, jsonify, redirect, render_template, request, url_for
 
 from config_store import load_config, save_config
 
 DB_PATH = "data/eventcrawler.sqlite"
+STATUS_PATH = Path("data/crawl_status.json")
 app = Flask(__name__)
 app.secret_key = "eventcrawler-local"
+CRAWL_PROCESS = None
+CRAWL_LOCK = threading.Lock()
 
 
 def conn():
+    Path("data").mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(DB_PATH)
     c.row_factory = sqlite3.Row
     return c
+
+
+def ensure_column(cur, table, column, ddl):
+    cols = [r[1] for r in cur.execute(f"PRAGMA table_info({table})").fetchall()]
+    if column not in cols:
+        cur.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
+def init_db():
+    c = conn()
+    cur = c.cursor()
+    cur.executescript(
+        '''
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_url TEXT UNIQUE NOT NULL,
+            region TEXT,
+            name TEXT,
+            event_date TEXT,
+            city TEXT,
+            address TEXT,
+            contact_phone TEXT,
+            contact_email TEXT,
+            score INTEGER DEFAULT 0,
+            first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id INTEGER NOT NULL,
+            product_name TEXT NOT NULL,
+            price_text TEXT,
+            numeric_price REAL,
+            is_free INTEGER DEFAULT 0,
+            is_available INTEGER,
+            first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(event_id, product_name, price_text)
+        );
+        '''
+    )
+    ensure_column(cur, "events", "event_external_id", "event_external_id TEXT")
+    ensure_column(cur, "events", "event_slug", "event_slug TEXT")
+    ensure_column(cur, "events", "contact_website", "contact_website TEXT")
+    ensure_column(cur, "events", "event_image", "event_image TEXT")
+    c.commit()
+    c.close()
+
+
+def read_crawl_status():
+    if not STATUS_PATH.exists():
+        return {"running": False, "regions": [], "last_error": None, "started_at": None, "finished_at": None}
+    try:
+        return json.loads(STATUS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"running": False, "regions": [], "last_error": "status_read_error", "started_at": None, "finished_at": None}
+
+
+def launch_crawl(selected_regions):
+    global CRAWL_PROCESS
+    with CRAWL_LOCK:
+        if CRAWL_PROCESS and CRAWL_PROCESS.poll() is None:
+            return False
+        env = os.environ.copy()
+        env["EVENTCRAWLER_SELECTED_REGIONS"] = ",".join(selected_regions)
+        env["PYTHONUNBUFFERED"] = "1"
+        log_path = Path("data/crawl.log")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(log_path, "a", encoding="utf-8")
+        CRAWL_PROCESS = subprocess.Popen(["python", "crawler.py"], env=env, stdout=log_file, stderr=subprocess.STDOUT)
+        return True
 
 
 def parse_dt(value):
@@ -96,9 +176,22 @@ def get_event(event_id):
     return out
 
 
-@app.route("/")
+@app.route("/", methods=["GET"])
 def dashboard():
-    return render_template("dashboard.html", stats=stats())
+    cfg = load_config()
+    return render_template("dashboard.html", stats=stats(), config=cfg, crawl_status=read_crawl_status())
+
+
+@app.route("/crawl", methods=["POST"])
+def run_crawl_now():
+    cfg = load_config()
+    selected_regions = request.form.getlist("regions")
+    allowed = [name for name, region in cfg["regions"].items() if region.get("enabled")]
+    selected_regions = [r for r in selected_regions if r in allowed]
+    if not selected_regions:
+        return redirect(url_for("dashboard", error="no_region"))
+    launch_crawl(selected_regions)
+    return redirect(url_for("dashboard", started=1))
 
 
 @app.route("/events")
@@ -163,6 +256,13 @@ def api_opportunities():
 def api_config():
     return jsonify(load_config())
 
+
+@app.route("/api/crawl_status")
+def api_crawl_status():
+    return jsonify(read_crawl_status())
+
+
+init_db()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=True)
