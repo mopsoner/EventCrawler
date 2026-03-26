@@ -1,4 +1,3 @@
-import os
 import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -7,19 +6,25 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 
+from config_store import load_config
+
 DB_PATH = "data/eventcrawler.sqlite"
 BASE_URL = "https://www.bizouk.com"
-REGIONS = {
-    "london": "https://www.bizouk.com/?region=london",
-    "guadeloupe": "https://www.bizouk.com/?region=guadeloupe",
-    "paris": "https://www.bizouk.com/?region=paris",
-    "rotterdam": "https://www.bizouk.com/?region=rotterdam",
-}
-HEADERS = {"User-Agent": "Mozilla/5.0"}
 EVENT_URL_RE = re.compile(r"/events/details/([^/]+)/(?P<id>\d+)")
 DATE_HINT_RE = re.compile(r"(\b20\d{2}\b|janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre|january|february|march|april|may|june|july|august|september|october|november|december|\bam\b|\bpm\b)", re.I)
 URL_RE = re.compile(r"https?://[^\s]+", re.I)
-MAX_WORKERS = int(os.getenv("EVENTCRAWLER_MAX_WORKERS", "6"))
+CONFIG = load_config()
+HEADERS = {"User-Agent": CONFIG.get("user_agent", "Mozilla/5.0")}
+MAX_WORKERS = int(CONFIG.get("max_workers", 6))
+REQUEST_TIMEOUT = int(CONFIG.get("request_timeout", 45))
+
+
+def enabled_regions():
+    regions = {}
+    for name, region in CONFIG.get("regions", {}).items():
+        if region.get("enabled") and region.get("url"):
+            regions[name] = region["url"]
+    return regions
 
 
 def conn():
@@ -145,7 +150,7 @@ def score_event(name, region, products):
 
 def fetch_html(url, session=None):
     client = session or requests
-    r = client.get(url, headers=HEADERS, timeout=45)
+    r = client.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
     r.raise_for_status()
     return r.text
 
@@ -354,8 +359,9 @@ def upsert_event(event):
 
 def run():
     init_db()
+    regions = enabled_regions()
     all_items = []
-    for region, start_url in REGIONS.items():
+    for region, start_url in regions.items():
         try:
             html = fetch_html(start_url)
             region_items = extract_event_links(html)
