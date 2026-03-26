@@ -1,9 +1,11 @@
 <!doctype html>
 <html><body>
 {% if event %}
-<h1>{{ event.name }}</h1>
-<p>{{ event.region }} | {{ event.city }} | {{ event.address }}</p>
-<p>{{ event.contact_phone }} {{ event.contact_email }}</p>
+<h1>{{ event.name or event.event_url }}</h1>
+<p><a href="{{ event.event_url }}">Open Bizouk event</a></p>
+<p>Region: {{ event.region }} | Date: {{ event.event_date }}</p>
+<p>City: {{ event.city }} | Address: {{ event.address }}</p>
+<p>Phone: {{ event.contact_phone }} | Email: {{ event.contact_email }}</p>
 <h2>Products</h2>
 <ul>
 {% for p in event.products %}
