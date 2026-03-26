@@ -24,6 +24,12 @@ def is_recent(value, hours=24):
         return False
     return datetime.utcnow() - dt <= timedelta(hours=hours)
 
+def has_column(table, column):
+    c = conn()
+    cols = [r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()]
+    c.close()
+    return column in cols
+
 def stats():
     c = conn()
     cur = c.cursor()
@@ -38,7 +44,10 @@ def stats():
 
 def list_events():
     c = conn()
-    rows = [dict(r) for r in c.execute("SELECT * FROM events ORDER BY score DESC, last_seen_at DESC").fetchall()]
+    select_cols = "id, event_url, region, name, event_date, city, address, contact_phone, contact_email, score"
+    if has_column("events", "contact_website"):
+        select_cols += ", contact_website"
+    rows = [dict(r) for r in c.execute(f"SELECT {select_cols} FROM events ORDER BY score DESC, last_seen_at DESC").fetchall()]
     c.close()
     return rows
 
@@ -60,7 +69,8 @@ def list_opportunities():
 
 def get_event(event_id):
     c = conn()
-    event = c.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
+    select_cols = "*"
+    event = c.execute(f"SELECT {select_cols} FROM events WHERE id=?", (event_id,)).fetchone()
     if not event:
         c.close()
         return None

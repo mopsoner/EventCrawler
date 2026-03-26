@@ -16,6 +16,7 @@ REGIONS = {
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 EVENT_URL_RE = re.compile(r"/events/details/([^/]+)/(?P<id>\d+)")
 DATE_HINT_RE = re.compile(r"(\b20\d{2}\b|janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre|january|february|march|april|may|june|july|august|september|october|november|december|\bam\b|\bpm\b)", re.I)
+URL_RE = re.compile(r"https?://[^\s]+", re.I)
 
 
 def conn():
@@ -65,6 +66,7 @@ def init_db():
     )
     ensure_column(cur, "events", "event_external_id", "event_external_id TEXT")
     ensure_column(cur, "events", "event_slug", "event_slug TEXT")
+    ensure_column(cur, "events", "contact_website", "contact_website TEXT")
     c.commit()
     c.close()
 
@@ -97,6 +99,14 @@ def extract_phone(text):
     for cand in candidates:
         if digits_only_count(cand) >= 9:
             return re.sub(r"\s+", " ", cand).strip()
+    return None
+
+
+def extract_website(text):
+    for url in URL_RE.findall(text or ""):
+        cleaned = url.rstrip(').,;]')
+        if "bizouk.com" not in cleaned.lower():
+            return cleaned
     return None
 
 
@@ -173,7 +183,8 @@ def extract_billet_lines(lines):
     if start is None:
         return []
     for j in range(start, len(lines)):
-        if lines[j].lower().startswith("montant total") or lines[j].lower().startswith("description"):
+        low = lines[j].lower()
+        if low.startswith("montant total") or low.startswith("description") or low == "contact":
             end = j
             break
     return lines[start:end] if end else lines[start:]
@@ -197,9 +208,8 @@ def extract_products(lines):
         if not name:
             continue
         window = " ".join(billet_lines[i:i+6]).lower()
-        is_available = None
-        if any(w in window for w in ["épuisé", "epuise", "sold out", "indisponible", "complet"]):
-            is_available = False
+        if any(w in window for w in ["épuisé", "epuise", "sold out", "indisponible", "complet", "a venir"]):
+            is_available = False if any(w in window for w in ["épuisé", "epuise", "sold out", "indisponible", "complet"]) else None
         else:
             is_available = True
         key = (name, line)
@@ -234,10 +244,24 @@ def extract_event_core(lines, title):
                 break
     city = None
     if address:
-        m = re.search(r"\b\d{5}\s+(.+)$", address)
+        m = re.search(r"\b\d{4,5}\s+(.+)$", address)
         if m:
             city = m.group(1).strip()
     return name, event_date, venue, address, city
+
+
+def extract_contact_info(lines):
+    contact_lines = []
+    for i, line in enumerate(lines):
+        if line.lower() == "contact":
+            contact_lines = lines[i + 1:i + 8]
+            break
+    contact_text = "\n".join(contact_lines) if contact_lines else "\n".join(lines)
+    return {
+        "contact_phone": extract_phone(contact_text),
+        "contact_email": extract_email(contact_text),
+        "contact_website": extract_website(contact_text),
+    }
 
 
 def extract_event(url, region, slug=None, external_id=None):
@@ -248,8 +272,7 @@ def extract_event(url, region, slug=None, external_id=None):
     lines = lines_from_soup(soup)
     name, event_date, venue, address, city = extract_event_core(lines, title)
     products = extract_products(lines)
-    contact_phone = extract_phone("\n".join(lines))
-    contact_email = extract_email("\n".join(lines))
+    contact = extract_contact_info(lines)
     event = {
         "event_url": url,
         "event_slug": slug,
@@ -259,8 +282,9 @@ def extract_event(url, region, slug=None, external_id=None):
         "event_date": event_date,
         "city": city,
         "address": address or venue,
-        "contact_phone": contact_phone,
-        "contact_email": contact_email,
+        "contact_phone": contact["contact_phone"],
+        "contact_email": contact["contact_email"],
+        "contact_website": contact["contact_website"],
         "products": products,
         "score": score_event(name, region, products),
     }
@@ -275,13 +299,13 @@ def upsert_event(event):
     if row:
         event_id = row["id"]
         cur.execute(
-            "UPDATE events SET event_external_id=?, event_slug=?, region=?, name=?, event_date=?, city=?, address=?, contact_phone=?, contact_email=?, score=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?",
-            (event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("score", 0), event_id),
+            "UPDATE events SET event_external_id=?, event_slug=?, region=?, name=?, event_date=?, city=?, address=?, contact_phone=?, contact_email=?, contact_website=?, score=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?",
+            (event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("score", 0), event_id),
         )
     else:
         cur.execute(
-            "INSERT INTO events(event_url, event_external_id, event_slug, region, name, event_date, city, address, contact_phone, contact_email, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (event["event_url"], event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("score", 0)),
+            "INSERT INTO events(event_url, event_external_id, event_slug, region, name, event_date, city, address, contact_phone, contact_email, contact_website, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (event["event_url"], event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("score", 0)),
         )
         event_id = cur.lastrowid
     for p in event.get("products", []):

@@ -3,7 +3,7 @@
 <h1>Events</h1>
 <p><a href="/">Dashboard</a></p>
 <table border="1">
-<tr><th>Name</th><th>Region</th><th>Date</th><th>Address</th><th>Phone</th><th>Email</th><th>Score</th></tr>
+<tr><th>Name</th><th>Region</th><th>Date</th><th>Address</th><th>Phone</th><th>Email</th><th>Website</th><th>Score</th></tr>
 {% for e in events %}
 <tr>
   <td><a href="/event/{{ e.id }}">{{ e.name or e.event_url }}</a></td>
@@ -12,6 +12,7 @@
   <td>{{ e.address }}</td>
   <td>{{ e.contact_phone }}</td>
   <td>{{ e.contact_email }}</td>
+  <td>{% if e.contact_website %}<a href="{{ e.contact_website }}">{{ e.contact_website }}</a>{% endif %}</td>
   <td>{{ e.score }}</td>
 </tr>
 {% endfor %}

@@ -6,6 +6,7 @@
 <p>Region: {{ event.region }} | Date: {{ event.event_date }}</p>
 <p>City: {{ event.city }} | Address: {{ event.address }}</p>
 <p>Phone: {{ event.contact_phone }} | Email: {{ event.contact_email }}</p>
+<p>Website: {% if event.contact_website %}<a href="{{ event.contact_website }}">{{ event.contact_website }}</a>{% endif %}</p>
 <h2>Products</h2>
 <ul>
 {% for p in event.products %}
