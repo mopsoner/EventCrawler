@@ -3,6 +3,7 @@ import os
 import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -14,7 +15,6 @@ from config_store import load_config
 DB_PATH = "data/eventcrawler.sqlite"
 BASE_URL = "https://www.bizouk.com"
 EVENT_URL_RE = re.compile(r"/events/details/([^/]+)/(?P<id>\d+)")
-DATE_HINT_RE = re.compile(r"(\b20\d{2}\b|janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre|january|february|march|april|may|june|july|august|september|october|november|december|\bam\b|\bpm\b)", re.I)
 URL_RE = re.compile(r"https?://[^\s]+", re.I)
 STATUS_PATH = Path("data/crawl_status.json")
 CONFIG = load_config()
@@ -41,6 +41,7 @@ def enabled_regions():
 
 
 def conn():
+    Path("data").mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(DB_PATH)
     c.row_factory = sqlite3.Row
     return c
@@ -62,6 +63,7 @@ def init_db():
             event_url TEXT UNIQUE NOT NULL,
             region TEXT,
             name TEXT,
+            subtitle TEXT,
             event_date TEXT,
             city TEXT,
             address TEXT,
@@ -89,6 +91,7 @@ def init_db():
     ensure_column(cur, "events", "event_slug", "event_slug TEXT")
     ensure_column(cur, "events", "contact_website", "contact_website TEXT")
     ensure_column(cur, "events", "event_image", "event_image TEXT")
+    ensure_column(cur, "events", "subtitle", "subtitle TEXT")
     c.commit()
     c.close()
 
@@ -120,7 +123,7 @@ def extract_phone(text):
     candidates = re.findall(r"(\+?\d[\d\s().-]{7,}\d)", text or "")
     for cand in candidates:
         if digits_only_count(cand) >= 9:
-            return re.sub(r"\s+", " ", cand).strip()
+            return re.sub(r"\s+", "", cand).strip()
     return None
 
 
@@ -193,99 +196,75 @@ def extract_event_links(html):
 def remove_noise(soup):
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
-    for node in soup.find_all(string=lambda s: s and "Votre panier" in s):
-        parent = node.parent
-        for _ in range(5):
-            if not parent:
-                break
-            classes = " ".join(parent.get("class", [])) if hasattr(parent, "get") else ""
-            text = parent.get_text(" ", strip=True) if hasattr(parent, "get_text") else ""
-            if "panier" in classes.lower() or "Votre panier" in text:
-                parent.decompose()
-                break
-            parent = parent.parent
     return soup
+
+
+def lines_from_node(node):
+    if not node:
+        return []
+    return [normalize_text(x) for x in node.get_text("\n", strip=True).splitlines() if normalize_text(x)]
 
 
 def lines_from_soup(soup):
     return [normalize_text(x) for x in soup.get_text("\n", strip=True).splitlines() if normalize_text(x)]
 
 
-def extract_billet_lines(lines):
-    start = None
-    end = None
-    for i, line in enumerate(lines):
-        if line.lower() == "billets":
-            start = i + 1
-            break
-    if start is None:
-        return []
-    for j in range(start, len(lines)):
-        low = lines[j].lower()
-        if low.startswith("montant total") or low.startswith("description") or low == "contact":
-            end = j
-            break
-    return lines[start:end] if end else lines[start:]
+def looks_like_date_line(text):
+    if not text:
+        return False
+    low = text.lower()
+    return bool(re.search(r"\b20\d{2}\b", text)) and any(k in low for k in ["am", "pm", " at ", " à ", "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december", "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"])
 
 
-def extract_products(lines):
-    billet_lines = extract_billet_lines(lines)
-    out = []
-    seen = set()
-    for i, line in enumerate(billet_lines):
-        price = parse_price(line)
-        if price is None:
-            continue
-        name = None
-        for back in range(1, 5):
-            if i - back >= 0:
-                cand = billet_lines[i - back]
-                if parse_price(cand) is None and cand.lower() not in {"billets", "montant total:"} and len(cand) < 140:
-                    name = cand
-                    break
-        if not name:
-            continue
-        window = " ".join(billet_lines[i:i+6]).lower()
-        if any(w in window for w in ["épuisé", "epuise", "sold out", "indisponible", "complet", "a venir"]):
-            is_available = False if any(w in window for w in ["épuisé", "epuise", "sold out", "indisponible", "complet"]) else None
-        else:
-            is_available = True
-        key = (name, line)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({
-            "product_name": name,
-            "price_text": line,
-            "numeric_price": price,
-            "is_free": price == 0.0,
-            "is_available": is_available,
-        })
-    return out
+def extract_header_fields(soup):
+    h1 = soup.find("h1")
+    h2 = soup.find("h2")
+    name = normalize_text(h1.get_text(" ", strip=True)) if h1 else None
+    subtitle = normalize_text(h2.get_text(" ", strip=True)) if h2 else None
 
-
-def extract_event_core(lines, title):
-    name = next((x for x in lines[:12] if len(x) > 4 and "bizouk" not in x.lower() and x.lower() != "évènements"), title)
-    event_date = next((x for x in lines[:25] if DATE_HINT_RE.search(x)), None)
-    venue = None
-    address = None
-    if event_date and event_date in lines:
-        idx = lines.index(event_date)
-        for j in range(idx + 1, min(idx + 12, len(lines))):
-            cand = lines[j]
-            low = cand.lower()
-            if not venue and "voir le plan d'accès" not in low and digits_only_count(cand) < 8:
-                venue = cand
-                continue
-            if not address and digits_only_count(cand) >= 5 and "voir le plan d'accès" not in low:
-                address = cand
-                break
+    date_text = None
     city = None
-    if address:
-        m = re.search(r"\b\d{4,5}\s+(.+)$", address)
-        if m:
-            city = m.group(1).strip()
-    return name, event_date, venue, address, city
+    address = None
+
+    search_root = None
+    if h1:
+        parent = h1.parent
+        for _ in range(4):
+            if not parent:
+                break
+            if hasattr(parent, "get_text") and len(parent.get_text(" ", strip=True)) > 20:
+                search_root = parent
+                break
+            parent = parent.parent
+    lines = lines_from_node(search_root) if search_root else lines_from_soup(soup)
+
+    if name and name in lines:
+        start = lines.index(name) + 1
+    else:
+        start = 0
+
+    if subtitle and subtitle in lines[start:]:
+        start = lines.index(subtitle, start) + 1
+
+    for i in range(start, min(start + 12, len(lines))):
+        line = lines[i]
+        if not date_text and looks_like_date_line(line):
+            date_text = line
+            continue
+        if date_text and not city and digits_only_count(line) < 6 and "view my" not in line.lower() and "contacter" not in line.lower() and "contact organizer" not in line.lower():
+            city = line
+            continue
+        if date_text and city and not address and "view my" not in line.lower() and "contact" not in line.lower():
+            address = line
+            break
+
+    return {
+        "name": name,
+        "subtitle": subtitle,
+        "event_date": date_text,
+        "city": city,
+        "address": address,
+    }
 
 
 def extract_contact_info(lines):
@@ -302,6 +281,58 @@ def extract_contact_info(lines):
     }
 
 
+def extract_products_from_dom(soup):
+    products = []
+    seen = set()
+    candidates = []
+    for div in soup.find_all(["div", "section", "article"]):
+        text = normalize_text(div.get_text(" ", strip=True))
+        if not text or "€" not in text:
+            continue
+        if len(text) > 2200:
+            continue
+        candidates.append(div)
+
+    for div in candidates:
+        text = div.get_text("\n", strip=True)
+        lines = [normalize_text(x) for x in text.splitlines() if normalize_text(x)]
+        price_line = next((x for x in lines if parse_price(x) is not None), None)
+        if not price_line:
+            continue
+        price = parse_price(price_line)
+        name = None
+        for line in lines:
+            if line == price_line:
+                break
+            if parse_price(line) is None and len(line) < 120 and "details" not in line.lower() and "pay with friends" not in line.lower():
+                name = line
+                break
+        if not name:
+            continue
+        blob = " ".join(lines).lower()
+        if any(k in name.lower() for k in ["contact", "site", "infoline", "view my itinerary", "log in"]):
+            continue
+        is_available = True
+        if any(w in blob for w in ["sold out", "épuisé", "indisponible", "complet"]):
+            is_available = False
+        elif any(w in blob for w in ["upcoming", "à venir"]):
+            is_available = None
+        key = (name, price_line)
+        if key in seen:
+            continue
+        seen.add(key)
+        products.append({
+            "product_name": name,
+            "price_text": price_line,
+            "numeric_price": price,
+            "is_free": price == 0.0,
+            "is_available": is_available,
+        })
+
+    products.sort(key=lambda p: (not p["is_free"], p["numeric_price"] if p["numeric_price"] is not None else 999999))
+    return products
+
+
 def build_event_from_item(item, session=None):
     url = item["url"]
     region = item["region"]
@@ -309,21 +340,22 @@ def build_event_from_item(item, session=None):
     external_id = item.get("external_id")
     html = fetch_html(url, session=session)
     soup = remove_noise(BeautifulSoup(html, "html.parser"))
-    h1 = soup.find("h1")
-    title = normalize_text(h1.get_text(" ", strip=True)) if h1 else (soup.title.get_text(" ", strip=True) if soup.title else url)
     lines = lines_from_soup(soup)
-    name, event_date, venue, address, city = extract_event_core(lines, title)
-    products = extract_products(lines)
+    header = extract_header_fields(soup)
     contact = extract_contact_info(lines)
+    products = extract_products_from_dom(soup)
+    title = soup.title.get_text(" ", strip=True) if soup.title else url
+    name = header["name"] or normalize_text(title)
     return {
         "event_url": url,
         "event_slug": slug,
         "event_external_id": external_id,
         "region": region,
         "name": name,
-        "event_date": event_date,
-        "city": city,
-        "address": address or venue,
+        "subtitle": header.get("subtitle"),
+        "event_date": header.get("event_date"),
+        "city": header.get("city"),
+        "address": header.get("address"),
         "contact_phone": contact["contact_phone"],
         "contact_email": contact["contact_email"],
         "contact_website": contact["contact_website"],
@@ -349,13 +381,13 @@ def upsert_event(event):
     if row:
         event_id = row["id"]
         cur.execute(
-            "UPDATE events SET event_external_id=?, event_slug=?, region=?, name=?, event_date=?, city=?, address=?, contact_phone=?, contact_email=?, contact_website=?, event_image=?, score=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?",
-            (event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0), event_id),
+            "UPDATE events SET event_external_id=?, event_slug=?, region=?, name=?, subtitle=?, event_date=?, city=?, address=?, contact_phone=?, contact_email=?, contact_website=?, event_image=?, score=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?",
+            (event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("subtitle"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0), event_id),
         )
     else:
         cur.execute(
-            "INSERT INTO events(event_url, event_external_id, event_slug, region, name, event_date, city, address, contact_phone, contact_email, contact_website, event_image, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (event["event_url"], event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0)),
+            "INSERT INTO events(event_url, event_external_id, event_slug, region, name, subtitle, event_date, city, address, contact_phone, contact_email, contact_website, event_image, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (event["event_url"], event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("subtitle"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0)),
         )
         event_id = cur.lastrowid
     for p in event.get("products", []):
@@ -374,7 +406,7 @@ def run():
     init_db()
     regions = enabled_regions()
     selected = list(regions.keys())
-    save_status({"running": True, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": __import__('datetime').datetime.utcnow().isoformat(), "finished_at": None, "last_error": None})
+    save_status({"running": True, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": datetime.utcnow().isoformat(), "finished_at": None, "last_error": None})
     all_items = []
     try:
         for region, start_url in regions.items():
@@ -389,8 +421,7 @@ def run():
                 print(f"[ERROR] region {region}: {exc}")
 
         if not all_items:
-            print("[INFO] No events found")
-            save_status({"running": False, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": __import__('datetime').datetime.utcnow().isoformat(), "finished_at": __import__('datetime').datetime.utcnow().isoformat(), "last_error": "No events found"})
+            save_status({"running": False, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": None, "finished_at": datetime.utcnow().isoformat(), "last_error": "No events found"})
             return
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -403,9 +434,9 @@ def run():
                     print(f"[OK] {item['region']} -> {item['external_id']} -> {item['url']}")
                 except Exception as exc:
                     print(f"[ERROR] event {item['url']}: {exc}")
-        save_status({"running": False, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": None, "finished_at": __import__('datetime').datetime.utcnow().isoformat(), "last_error": None})
+        save_status({"running": False, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": None, "finished_at": datetime.utcnow().isoformat(), "last_error": None})
     except Exception as exc:
-        save_status({"running": False, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": None, "finished_at": __import__('datetime').datetime.utcnow().isoformat(), "last_error": str(exc)})
+        save_status({"running": False, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": None, "finished_at": datetime.utcnow().isoformat(), "last_error": str(exc)})
         raise
 
 
