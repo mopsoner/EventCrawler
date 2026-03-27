@@ -160,11 +160,6 @@ def log_crawl_error(run_id, scope, target, error_text):
     c.close()
 
 
-def save_status(data):
-    STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATUS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
 def normalize_text(text):
     return re.sub(r"\s+", " ", (text or "").strip())
 
@@ -329,29 +324,56 @@ def extract_header_fields(soup):
     return {"name": name, "subtitle": subtitle, "event_date": date_text, "city": city, "address": address}
 
 
-def extract_contact_info(lines):
-    contact_lines = []
+def extract_contact_info(soup, lines):
+    candidate_lines = []
     for i, line in enumerate(lines):
-        if line.lower() == "contact":
-            contact_lines = lines[i + 1:i + 12]
-            break
+        low = line.lower()
+        if low == "contact" or low.startswith("contact ") or "contact organizer" in low:
+            candidate_lines.extend(lines[i:i + 25])
+    if not candidate_lines:
+        for i, line in enumerate(lines):
+            low = line.lower()
+            if "infoline" in low or "whatsapp" in low or low.startswith("site") or low.startswith("website"):
+                start = max(0, i - 2)
+                candidate_lines.extend(lines[start:i + 8])
+    seen = set()
+    candidate_lines = [x for x in candidate_lines if not (x in seen or seen.add(x))]
+
     contact_phone = None
     contact_email = None
     contact_website = None
-    for line in contact_lines:
+
+    for line in candidate_lines:
         low = line.lower()
-        if low.startswith("infoline"):
+        if ("infoline" in low or "whatsapp" in low or low.startswith("phone")) and not contact_phone:
             contact_phone = extract_phone(line)
-        elif low.startswith("site") or low.startswith("website"):
+        if (low.startswith("site") or low.startswith("website") or "http" in low) and not contact_website:
             contact_website = extract_website(line)
-        elif not contact_email:
+        if not contact_email:
             contact_email = extract_email(line)
-    if not (contact_phone or contact_email or contact_website):
-        contact_text = "\n".join(contact_lines) if contact_lines else "\n".join(lines)
-        contact_phone = extract_phone(contact_text)
-        contact_email = extract_email(contact_text)
-        contact_website = extract_website(contact_text)
-    return {"contact_phone": contact_phone, "contact_email": contact_email, "contact_website": contact_website}
+
+    if not contact_website:
+        for a in soup.select('a[href]'):
+            href = (a.get('href') or '').strip()
+            if href.startswith('http') and 'bizouk.com' not in href.lower():
+                contact_website = href
+                break
+
+    if not contact_phone:
+        prioritized_text = "\n".join(candidate_lines) if candidate_lines else "\n".join(lines)
+        contact_phone = extract_phone(prioritized_text)
+    if not contact_email:
+        prioritized_text = "\n".join(candidate_lines) if candidate_lines else "\n".join(lines)
+        contact_email = extract_email(prioritized_text)
+    if not contact_website:
+        prioritized_text = "\n".join(candidate_lines) if candidate_lines else "\n".join(lines)
+        contact_website = extract_website(prioritized_text)
+
+    return {
+        "contact_phone": contact_phone,
+        "contact_email": contact_email,
+        "contact_website": contact_website,
+    }
 
 
 def is_non_product_name(line):
@@ -404,7 +426,7 @@ def build_event_from_item(item, session=None):
     soup = remove_noise(BeautifulSoup(html, "html.parser"))
     lines = lines_from_soup(soup)
     header = extract_header_fields(soup)
-    contact = extract_contact_info(lines)
+    contact = extract_contact_info(soup, lines)
     products = extract_products_from_dom(soup)
     title = soup.title.get_text(" ", strip=True) if soup.title else url
     name = header["name"] or normalize_text(title)

@@ -21,14 +21,14 @@
         <input type="number" name="request_timeout" min="5" max="180" value="{{ config.request_timeout }}">
       </label>
       <label class="field">
-        <span>Scan pages régions</span>
+        <span>Scan pages régions (en minutes)</span>
         <input type="number" name="region_scan_frequency_minutes" min="5" max="10080" value="{{ config.region_scan_frequency_minutes }}">
-        <small class="field-help">Fréquence de la boucle qui parcourt les pages régions pour détecter les nouveaux événements.</small>
+        <small class="field-help">Boucle de découverte des nouveaux événements. Exemple : 60 = 1 heure, 120 = 2 heures, 1440 = 1 jour.</small>
       </label>
       <label class="field">
-        <span>Refresh produits gratuits</span>
+        <span>Refresh produits gratuits (en heures)</span>
         <input type="number" name="free_product_refresh_frequency_hours" min="1" max="720" value="{{ config.free_product_refresh_frequency_hours }}">
-        <small class="field-help">Fréquence de la boucle qui revisite les événements pour mettre à jour l’état des produits gratuits.</small>
+        <small class="field-help">Boucle de mise à jour des produits gratuits existants. Exemple : 24 = 1 jour, 48 = 2 jours.</small>
       </label>
     </div>
     <label class="field">
