@@ -1,19 +1,55 @@
-<!doctype html>
-<html><body>
+{% extends 'base.html' %}
+{% block title %}Event detail · EventCrawler{% endblock %}
+{% block content %}
 {% if event %}
-<h1>{{ event.name or event.event_url }}</h1>
-<p><a href="{{ event.event_url }}">Open Bizouk event</a></p>
-<p>Region: {{ event.region }} | Date: {{ event.event_date }}</p>
-<p>City: {{ event.city }} | Address: {{ event.address }}</p>
-<p>Phone: {{ event.contact_phone }} | Email: {{ event.contact_email }}</p>
-<p>Website: {% if event.contact_website %}<a href="{{ event.contact_website }}">{{ event.contact_website }}</a>{% endif %}</p>
-<h2>Products</h2>
-<ul>
-{% for p in event.products %}
-<li>{{ p.product_name }} - {{ p.price_text }} - free={{ p.is_free }} - available={{ p.is_available }}</li>
-{% endfor %}
-</ul>
+<section class="page-head">
+  <div>
+    <div class="eyebrow">Event detail</div>
+    <h1>{{ event.name or event.event_url }}</h1>
+    {% if event.subtitle %}<p>{{ event.subtitle }}</p>{% endif %}
+  </div>
+</section>
+<div class="detail-grid">
+  <section class="panel">
+    <div class="detail-meta-grid">
+      <div><span class="meta-label">Region</span><div>{{ event.region or '—' }}</div></div>
+      <div><span class="meta-label">Date</span><div>{{ event.event_date or '—' }}</div></div>
+      <div><span class="meta-label">City</span><div>{{ event.city or '—' }}</div></div>
+      <div><span class="meta-label">Address</span><div>{{ event.address or '—' }}</div></div>
+      <div><span class="meta-label">Phone</span><div>{{ event.contact_phone or '—' }}</div></div>
+      <div><span class="meta-label">Email</span><div>{{ event.contact_email or '—' }}</div></div>
+      <div><span class="meta-label">Website</span><div>{% if event.contact_website %}<a href="{{ event.contact_website }}">{{ event.contact_website }}</a>{% else %}—{% endif %}</div></div>
+      <div><span class="meta-label">Bizouk</span><div><a href="{{ event.event_url }}">Open event page</a></div></div>
+    </div>
+  </section>
+  <aside class="panel image-panel">
+    {% if event.event_image %}<img src="{{ event.event_image }}" alt="{{ event.name }}">{% else %}<div class="media-fallback big">No image</div>{% endif %}
+  </aside>
+</div>
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <h2>Products</h2>
+      <p>Billets et statuts détectés pour cet événement.</p>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Name</th><th>Price</th><th>Free</th><th>Available</th></tr></thead>
+      <tbody>
+        {% for p in event.products %}
+        <tr>
+          <td>{{ p.product_name }}</td>
+          <td>{{ p.price_text }}</td>
+          <td>{% if p.is_free %}<span class="badge badge-success">Free</span>{% else %}<span class="badge">Paid</span>{% endif %}</td>
+          <td>{% if p.is_available in (1, true) %}<span class="badge badge-info">Available</span>{% elif p.is_available in (0, false) %}<span class="badge badge-danger">Unavailable</span>{% else %}<span class="badge">Unknown</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
 {% else %}
-<p>Event not found</p>
+<section class="panel"><div class="empty-state">Event not found.</div></section>
 {% endif %}
-</body></html>
+{% endblock %}

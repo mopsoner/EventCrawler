@@ -67,6 +67,7 @@ def init_db():
     ensure_column(cur, "events", "event_slug", "event_slug TEXT")
     ensure_column(cur, "events", "contact_website", "contact_website TEXT")
     ensure_column(cur, "events", "event_image", "event_image TEXT")
+    ensure_column(cur, "events", "subtitle", "subtitle TEXT")
     c.commit()
     c.close()
 
@@ -131,29 +132,35 @@ def stats():
     return out
 
 
-def list_events():
+def list_events(limit=None):
     c = conn()
-    select_cols = "id, event_url, region, name, event_date, city, address, contact_phone, contact_email, score"
+    select_cols = "id, event_url, region, name, subtitle, event_date, city, address, contact_phone, contact_email, score"
     if has_column("events", "contact_website"):
         select_cols += ", contact_website"
     if has_column("events", "event_image"):
         select_cols += ", event_image"
-    rows = [dict(r) for r in c.execute(f"SELECT {select_cols} FROM events ORDER BY score DESC, last_seen_at DESC").fetchall()]
+    sql = f"SELECT {select_cols} FROM events ORDER BY score DESC, last_seen_at DESC"
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    rows = [dict(r) for r in c.execute(sql).fetchall()]
     c.close()
     return rows
 
 
-def list_free():
+def list_free(limit=None):
     c = conn()
-    select_cols = "p.*, e.name AS event_name, e.region, e.event_url, e.first_seen_at AS event_first_seen, e.score, e.id AS event_id"
+    select_cols = "p.*, e.name AS event_name, e.subtitle AS event_subtitle, e.region, e.event_url, e.first_seen_at AS event_first_seen, e.score, e.id AS event_id"
     if has_column("events", "event_image"):
         select_cols += ", e.event_image AS event_image"
-    rows = [dict(r) for r in c.execute(f"SELECT {select_cols} FROM products p JOIN events e ON e.id = p.event_id WHERE p.is_free = 1 ORDER BY p.last_seen_at DESC").fetchall()]
+    sql = f"SELECT {select_cols} FROM products p JOIN events e ON e.id = p.event_id WHERE p.is_free = 1 ORDER BY p.last_seen_at DESC"
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    rows = [dict(r) for r in c.execute(sql).fetchall()]
     c.close()
     return rows
 
 
-def list_opportunities():
+def list_opportunities(limit=None):
     rows = []
     for r in list_free():
         recent = is_recent(r.get("event_first_seen"), hours=24)
@@ -161,7 +168,7 @@ def list_opportunities():
         r["is_early_free_opportunity"] = bool(r.get("is_free")) and r.get("is_available") in (1, True) and recent
         rows.append(r)
     rows.sort(key=lambda x: (x["is_early_free_opportunity"], x.get("score", 0), x.get("event_first_seen") or ""), reverse=True)
-    return rows
+    return rows[:limit] if limit else rows
 
 
 def get_event(event_id):
@@ -179,7 +186,14 @@ def get_event(event_id):
 @app.route("/", methods=["GET"])
 def dashboard():
     cfg = load_config()
-    return render_template("dashboard.html", stats=stats(), config=cfg, crawl_status=read_crawl_status())
+    return render_template(
+        "dashboard.html",
+        stats=stats(),
+        config=cfg,
+        crawl_status=read_crawl_status(),
+        top_events=list_events(limit=6),
+        top_opportunities=list_opportunities(limit=8),
+    )
 
 
 @app.route("/crawl", methods=["POST"])

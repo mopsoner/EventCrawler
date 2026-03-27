@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}EventCrawler{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-block">
+        <div class="brand-mark">EC</div>
+        <div>
+          <div class="brand-title">EventCrawler</div>
+          <div class="brand-subtitle">Bizouk monitor</div>
+        </div>
+      </div>
+      <nav class="nav-list">
+        <a href="/" class="nav-link">Dashboard</a>
+        <a href="/events" class="nav-link">Events</a>
+        <a href="/free" class="nav-link">Free products</a>
+        <a href="/opportunities" class="nav-link">Opportunities</a>
+        <a href="/config" class="nav-link">Config</a>
+      </nav>
+      <div class="sidebar-card">
+        <div class="sidebar-card-label">Charte</div>
+        <div class="sidebar-card-title">Night Pulse</div>
+        <div class="sidebar-card-copy">Fond sombre premium, accents bleu glacier et émeraude, cartes nettes et lisibilité forte.</div>
+      </div>
+    </aside>
+    <main class="main-panel">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</body>
+</html>

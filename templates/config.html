@@ -1,38 +1,42 @@
-<!doctype html>
-<html><body>
-<h1>Configuration</h1>
-<p><a href="/">Dashboard</a></p>
-{% if saved %}<p><strong>Configuration saved.</strong></p>{% endif %}
-<form method="post">
-  <p>
-    <label>Max workers<br>
-      <input type="number" name="max_workers" min="1" max="32" value="{{ config.max_workers }}">
-    </label>
-  </p>
-  <p>
-    <label>Request timeout (seconds)<br>
-      <input type="number" name="request_timeout" min="5" max="180" value="{{ config.request_timeout }}">
-    </label>
-  </p>
-  <p>
-    <label>User-Agent<br>
-      <input type="text" name="user_agent" value="{{ config.user_agent }}" style="width: 480px;">
-    </label>
-  </p>
-  <h2>Regions</h2>
-  {% for name, region in config.regions.items() %}
-    <fieldset style="margin-bottom: 12px;">
-      <legend>{{ name }}</legend>
-      <label>
-        <input type="checkbox" name="region_enabled_{{ name }}" {% if region.enabled %}checked{% endif %}>
-        Enabled
+{% extends 'base.html' %}
+{% block title %}Config · EventCrawler{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <div class="eyebrow">Settings</div>
+    <h1>Configuration</h1>
+    <p>Ajuste les régions, le nombre de workers et le timeout depuis une interface plus propre.</p>
+  </div>
+</section>
+<section class="panel panel-form">
+  {% if saved %}<div class="flash success">Configuration saved.</div>{% endif %}
+  <form method="post">
+    <div class="form-grid">
+      <label class="field">
+        <span>Max workers</span>
+        <input type="number" name="max_workers" min="1" max="32" value="{{ config.max_workers }}">
       </label>
-      <br><br>
-      <label>URL<br>
-        <input type="text" name="region_url_{{ name }}" value="{{ region.url }}" style="width: 600px;">
+      <label class="field">
+        <span>Request timeout (seconds)</span>
+        <input type="number" name="request_timeout" min="5" max="180" value="{{ config.request_timeout }}">
       </label>
-    </fieldset>
-  {% endfor %}
-  <p><button type="submit">Save config</button></p>
-</form>
-</body></html>
+    </div>
+    <label class="field">
+      <span>User-Agent</span>
+      <input type="text" name="user_agent" value="{{ config.user_agent }}">
+    </label>
+    <div class="region-stack">
+      {% for name, region in config.regions.items() %}
+      <div class="region-card">
+        <label class="toggle-line">
+          <input type="checkbox" name="region_enabled_{{ name }}" {% if region.enabled %}checked{% endif %}>
+          <span>{{ name|capitalize }}</span>
+        </label>
+        <input type="text" name="region_url_{{ name }}" value="{{ region.url }}">
+      </div>
+      {% endfor %}
+    </div>
+    <div class="form-actions"><button type="submit" class="btn btn-primary">Save config</button></div>
+  </form>
+</section>
+{% endblock %}

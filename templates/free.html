@@ -1,18 +1,32 @@
-<!doctype html>
-<html><body>
-<h1>Free Products</h1>
-<p><a href="/">Dashboard</a></p>
-<table border="1">
-<tr><th>Event</th><th>Region</th><th>Product</th><th>Price</th><th>Available</th><th>Event URL</th></tr>
-{% for r in rows %}
-<tr>
-  <td><a href="/event/{{ r.event_id }}">{{ r.event_name or r.event_url }}</a></td>
-  <td>{{ r.region }}</td>
-  <td>{{ r.product_name }}</td>
-  <td>{{ r.price_text }}</td>
-  <td>{{ r.is_available }}</td>
-  <td><a href="{{ r.event_url }}">open</a></td>
-</tr>
-{% endfor %}
-</table>
-</body></html>
+{% extends 'base.html' %}
+{% block title %}Free products · EventCrawler{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <div class="eyebrow">Monitoring</div>
+    <h1>Free products</h1>
+    <p>Liste des produits gratuits reliés à leur événement source.</p>
+  </div>
+</section>
+<section class="panel">
+  <div class="table-wrap">
+    <table class="table">
+      <thead>
+        <tr><th>Event</th><th>Region</th><th>Product</th><th>Price</th><th>Status</th><th>Open</th></tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td><a href="/event/{{ r.event_id }}">{{ r.event_name or r.event_url }}</a></td>
+          <td>{{ r.region }}</td>
+          <td>{{ r.product_name }}</td>
+          <td>{{ r.price_text }}</td>
+          <td>{% if r.is_available in (1, true) %}<span class="badge badge-success">Available</span>{% elif r.is_available in (0, false) %}<span class="badge badge-danger">Unavailable</span>{% else %}<span class="badge">Unknown</span>{% endif %}</td>
+          <td><a href="{{ r.event_url }}" class="text-link">Bizouk</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
