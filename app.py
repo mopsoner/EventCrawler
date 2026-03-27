@@ -3,6 +3,7 @@ import os
 import sqlite3
 import subprocess
 import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from flask import Flask, jsonify, redirect, render_template, request, url_for
@@ -11,10 +12,14 @@ from config_store import load_config, save_config
 
 DB_PATH = "data/eventcrawler.sqlite"
 STATUS_PATH = Path("data/crawl_status.json")
+SCHEDULER_STATE_PATH = Path("data/scheduler_state.json")
 app = Flask(__name__)
 app.secret_key = "eventcrawler-local"
 CRAWL_PROCESS = None
 CRAWL_LOCK = threading.Lock()
+SCHEDULER_THREAD = None
+SCHEDULER_THREAD_LOCK = threading.Lock()
+SCHEDULER_LOOP_SECONDS = 30
 
 
 def conn():
@@ -108,6 +113,66 @@ def init_db():
     c.close()
 
 
+def default_scheduler_state():
+    return {
+        "enabled": False,
+        "last_region_scan_at": None,
+        "last_free_refresh_at": None,
+        "current_job": None,
+        "updated_at": None,
+    }
+
+
+def read_scheduler_state():
+    if not SCHEDULER_STATE_PATH.exists():
+        state = default_scheduler_state()
+        write_scheduler_state(state)
+        return state
+    try:
+        data = json.loads(SCHEDULER_STATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        data = default_scheduler_state()
+    state = default_scheduler_state()
+    state.update(data if isinstance(data, dict) else {})
+    return state
+
+
+def write_scheduler_state(state):
+    state = dict(default_scheduler_state(), **(state or {}))
+    state["updated_at"] = datetime.utcnow().isoformat()
+    SCHEDULER_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SCHEDULER_STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    return state
+
+
+def patch_scheduler_state(**fields):
+    state = read_scheduler_state()
+    state.update(fields)
+    return write_scheduler_state(state)
+
+
+def crawl_is_running():
+    global CRAWL_PROCESS
+    return bool(CRAWL_PROCESS and CRAWL_PROCESS.poll() is None)
+
+
+def stop_crawl_process():
+    global CRAWL_PROCESS
+    with CRAWL_LOCK:
+        if not CRAWL_PROCESS or CRAWL_PROCESS.poll() is not None:
+            return False
+        try:
+            CRAWL_PROCESS.terminate()
+            CRAWL_PROCESS.wait(timeout=10)
+        except Exception:
+            try:
+                CRAWL_PROCESS.kill()
+            except Exception:
+                pass
+        patch_scheduler_state(current_job=None)
+        return True
+
+
 def read_crawl_status():
     if not STATUS_PATH.exists():
         return {"running": False, "regions": [], "last_error": None, "started_at": None, "finished_at": None}
@@ -117,13 +182,14 @@ def read_crawl_status():
         return {"running": False, "regions": [], "last_error": "status_read_error", "started_at": None, "finished_at": None}
 
 
-def launch_crawl(selected_regions):
+def launch_crawl(selected_regions, trigger="manual"):
     global CRAWL_PROCESS
     with CRAWL_LOCK:
         if CRAWL_PROCESS and CRAWL_PROCESS.poll() is None:
             return False
         env = os.environ.copy()
         env["EVENTCRAWLER_SELECTED_REGIONS"] = ",".join(selected_regions)
+        env["EVENTCRAWLER_TRIGGER"] = trigger
         env["PYTHONUNBUFFERED"] = "1"
         log_path = Path("data/crawl.log")
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -146,6 +212,14 @@ def is_recent(value, hours=24):
     if not dt:
         return False
     return datetime.utcnow() - dt.replace(tzinfo=None) <= timedelta(hours=hours)
+
+
+def is_due(last_run_at, minutes=0, hours=0):
+    dt = parse_dt(last_run_at)
+    if not dt:
+        return True
+    delta = datetime.utcnow() - dt.replace(tzinfo=None)
+    return delta >= timedelta(minutes=minutes, hours=hours)
 
 
 def time_ago(value):
@@ -313,6 +387,48 @@ def get_event(event_id):
     return out
 
 
+def scheduler_tick():
+    state = read_scheduler_state()
+    if not state.get("enabled"):
+        return
+    if crawl_is_running():
+        return
+    cfg = load_config()
+    enabled_regions = [name for name, region in cfg["regions"].items() if region.get("enabled")]
+    if not enabled_regions:
+        return
+    region_due = is_due(state.get("last_region_scan_at"), minutes=int(cfg.get("region_scan_frequency_minutes", 60)))
+    free_due = is_due(state.get("last_free_refresh_at"), hours=int(cfg.get("free_product_refresh_frequency_hours", 24)))
+    if region_due:
+        if launch_crawl(enabled_regions, trigger="scheduler_region_scan"):
+            patch_scheduler_state(last_region_scan_at=datetime.utcnow().isoformat(), current_job="region_scan")
+            return
+    if free_due:
+        if launch_crawl(enabled_regions, trigger="scheduler_free_refresh"):
+            patch_scheduler_state(last_free_refresh_at=datetime.utcnow().isoformat(), current_job="free_refresh")
+            return
+    if not crawl_is_running() and state.get("current_job"):
+        patch_scheduler_state(current_job=None)
+
+
+def scheduler_loop():
+    while True:
+        try:
+            scheduler_tick()
+        except Exception:
+            pass
+        time.sleep(SCHEDULER_LOOP_SECONDS)
+
+
+def ensure_scheduler_thread():
+    global SCHEDULER_THREAD
+    with SCHEDULER_THREAD_LOCK:
+        if SCHEDULER_THREAD and SCHEDULER_THREAD.is_alive():
+            return
+        SCHEDULER_THREAD = threading.Thread(target=scheduler_loop, daemon=True, name="eventcrawler-scheduler")
+        SCHEDULER_THREAD.start()
+
+
 @app.route("/", methods=["GET"])
 def dashboard():
     cfg = load_config()
@@ -321,6 +437,7 @@ def dashboard():
         stats=stats(),
         config=cfg,
         crawl_status=read_crawl_status(),
+        scheduler_state=read_scheduler_state(),
         top_events=list_events(limit=6),
         top_opportunities=list_opportunities(limit=8),
         watchlist_events=list_events(limit=6, watchlist_only=True),
@@ -337,8 +454,45 @@ def run_crawl_now():
     selected_regions = [r for r in selected_regions if r in allowed]
     if not selected_regions:
         return redirect(url_for("dashboard", error="no_region"))
-    launch_crawl(selected_regions)
+    launch_crawl(selected_regions, trigger="manual_dashboard")
     return redirect(url_for("dashboard", started=1))
+
+
+@app.route("/crawl/stop", methods=["POST"])
+def stop_crawl_now():
+    stop_crawl_process()
+    return redirect(request.referrer or url_for("dashboard"))
+
+
+@app.route("/scheduler/start", methods=["POST"])
+def scheduler_start():
+    ensure_scheduler_thread()
+    patch_scheduler_state(enabled=True)
+    return redirect(request.referrer or url_for("config_page", scheduler_saved=1))
+
+
+@app.route("/scheduler/stop", methods=["POST"])
+def scheduler_stop():
+    patch_scheduler_state(enabled=False, current_job=None)
+    return redirect(request.referrer or url_for("config_page", scheduler_saved=1))
+
+
+@app.route("/scheduler/run-region-scan", methods=["POST"])
+def scheduler_run_region_scan():
+    cfg = load_config()
+    enabled_regions = [name for name, region in cfg["regions"].items() if region.get("enabled")]
+    if enabled_regions and launch_crawl(enabled_regions, trigger="manual_region_scan"):
+        patch_scheduler_state(last_region_scan_at=datetime.utcnow().isoformat(), current_job="region_scan")
+    return redirect(request.referrer or url_for("config_page"))
+
+
+@app.route("/scheduler/run-free-refresh", methods=["POST"])
+def scheduler_run_free_refresh():
+    cfg = load_config()
+    enabled_regions = [name for name, region in cfg["regions"].items() if region.get("enabled")]
+    if enabled_regions and launch_crawl(enabled_regions, trigger="manual_free_refresh"):
+        patch_scheduler_state(last_free_refresh_at=datetime.utcnow().isoformat(), current_job="free_refresh")
+    return redirect(request.referrer or url_for("config_page"))
 
 
 @app.route("/events")
@@ -417,7 +571,8 @@ def config_page():
         save_config(new_config)
         return redirect(url_for("config_page", saved=1))
     saved = request.args.get("saved") == "1"
-    return render_template("config.html", config=load_config(), saved=saved)
+    scheduler_saved = request.args.get("scheduler_saved") == "1"
+    return render_template("config.html", config=load_config(), saved=saved, scheduler_saved=scheduler_saved, scheduler_state=read_scheduler_state(), crawl_status=read_crawl_status())
 
 
 @app.route("/api/events")
@@ -450,7 +605,13 @@ def api_crawl_status():
     return jsonify(read_crawl_status())
 
 
+@app.route("/api/scheduler_status")
+def api_scheduler_status():
+    return jsonify(read_scheduler_state())
+
+
 init_db()
+ensure_scheduler_thread()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=True)

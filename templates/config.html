@@ -5,7 +5,31 @@
   <div>
     <div class="eyebrow">Settings</div>
     <h1>Configuration</h1>
-    <p>Règle le crawler, les fréquences de boucle et les régions depuis la même page.</p>
+    <p>Règle le crawler, les fréquences de boucle et pilote les cron directement depuis l’admin.</p>
+  </div>
+</section>
+<section class="panel">
+  <div class="panel-header">
+    <div>
+      <h2>Scheduler / Cron admin</h2>
+      <p>Démarre, arrête et lance manuellement les deux boucles planifiées.</p>
+    </div>
+  </div>
+  {% if scheduler_saved %}<div class="flash success">Scheduler updated.</div>{% endif %}
+  <div class="detail-meta-grid">
+    <div><span class="meta-label">Scheduler</span><div>{% if scheduler_state.enabled %}<span class="badge badge-success">Enabled</span>{% else %}<span class="badge badge-danger">Stopped</span>{% endif %}</div></div>
+    <div><span class="meta-label">Current job</span><div>{{ scheduler_state.current_job or '—' }}</div></div>
+    <div><span class="meta-label">Last region scan</span><div>{{ scheduler_state.last_region_scan_at or '—' }}</div></div>
+    <div><span class="meta-label">Last free refresh</span><div>{{ scheduler_state.last_free_refresh_at or '—' }}</div></div>
+    <div><span class="meta-label">Crawler process</span><div>{% if crawl_status.running %}<span class="badge badge-info">Running</span>{% else %}<span class="badge">Idle</span>{% endif %}</div></div>
+    <div><span class="meta-label">Regions in current crawl</span><div>{{ crawl_status.regions|join(', ') if crawl_status.regions else '—' }}</div></div>
+  </div>
+  <div class="actions-row wrap">
+    <form method="post" action="/scheduler/start"><button type="submit" class="btn btn-primary">Start cron</button></form>
+    <form method="post" action="/scheduler/stop"><button type="submit" class="btn btn-secondary">Stop cron</button></form>
+    <form method="post" action="/scheduler/run-region-scan"><button type="submit" class="btn btn-secondary">Run region scan now</button></form>
+    <form method="post" action="/scheduler/run-free-refresh"><button type="submit" class="btn btn-secondary">Run free refresh now</button></form>
+    <form method="post" action="/crawl/stop"><button type="submit" class="btn btn-secondary">Stop current crawl</button></form>
   </div>
 </section>
 <section class="panel panel-form">
