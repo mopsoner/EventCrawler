@@ -1,11 +1,13 @@
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlparse
 from flask import Flask, jsonify, redirect, render_template, request, url_for
 
 from config_store import load_config, save_config
@@ -13,6 +15,15 @@ from config_store import load_config, save_config
 DB_PATH = "data/eventcrawler.sqlite"
 STATUS_PATH = Path("data/crawl_status.json")
 SCHEDULER_STATE_PATH = Path("data/scheduler_state.json")
+NOISE_ORGANIZER_HOSTS = {
+    "bizouk.com",
+    "www.bizouk.com",
+    "maps.google.com",
+    "www.google.com",
+    "google.com",
+    "gov.uk",
+    "www.gov.uk",
+}
 app = Flask(__name__)
 app.secret_key = "eventcrawler-local"
 CRAWL_PROCESS = None
@@ -246,6 +257,51 @@ def time_ago(value):
     return f"il y a {years} an{'s' if years > 1 else ''}"
 
 
+def normalize_phone(value):
+    digits = re.sub(r"\D", "", value or "")
+    return digits if len(digits) >= 9 else None
+
+
+def normalize_email(value):
+    value = (value or "").strip().lower()
+    return value or None
+
+
+def normalize_website(value):
+    value = (value or "").strip()
+    if not value:
+        return None
+    try:
+        parsed = urlparse(value if "://" in value else f"https://{value}")
+    except Exception:
+        return None
+    host = (parsed.netloc or parsed.path or "").strip().lower()
+    if not host:
+        return None
+    if "/" in host:
+        host = host.split("/", 1)[0]
+    if host.startswith("www."):
+        host = host[4:]
+    if host in {h.replace('www.', '') for h in NOISE_ORGANIZER_HOSTS}:
+        return None
+    if host.endswith("google.com") or host.endswith("gov.uk"):
+        return None
+    return host
+
+
+def organizer_identity(row):
+    phone = normalize_phone(row.get("contact_phone"))
+    if phone:
+        return (f"phone:{phone}", "phone", phone)
+    email = normalize_email(row.get("contact_email"))
+    if email:
+        return (f"email:{email}", "email", email)
+    website = normalize_website(row.get("contact_website"))
+    if website:
+        return (f"website:{website}", "website", website)
+    return (None, None, None)
+
+
 def has_column(table, column):
     c = conn()
     cols = [r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()]
@@ -269,18 +325,17 @@ def stats():
         "free_products": cur.execute("SELECT COUNT(*) FROM products WHERE COALESCE(numeric_price, -1) = 0 AND is_free = 1").fetchone()[0],
         "free_available": cur.execute("SELECT COUNT(*) FROM products WHERE COALESCE(numeric_price, -1) = 0 AND is_free = 1 AND is_available = 1").fetchone()[0],
         "watchlist": cur.execute("SELECT COUNT(*) FROM events WHERE COALESCE(is_watchlisted,0)=1").fetchone()[0],
-        "organizers": cur.execute("SELECT COUNT(*) FROM (SELECT COALESCE(NULLIF(contact_website,''), NULLIF(contact_email,''), NULLIF(contact_phone,'')) AS organizer_key FROM events WHERE COALESCE(NULLIF(contact_website,''), NULLIF(contact_email,''), NULLIF(contact_phone,'')) IS NOT NULL GROUP BY organizer_key)").fetchone()[0],
+        "organizers": 0,
         "last_seen_at": cur.execute("SELECT MAX(last_seen_at) FROM events").fetchone()[0],
     }
     c.close()
+    out["organizers"] = len(list_organizers())
     return out
 
 
 def list_events(limit=None, watchlist_only=False):
     c = conn()
-    select_cols = "id, event_url, region, name, subtitle, event_date, city, address, contact_phone, contact_email, first_seen_at, score, manual_status, private_note, is_watchlisted"
-    if has_column("events", "contact_website"):
-        select_cols += ", contact_website"
+    select_cols = "id, event_url, region, name, subtitle, event_date, city, address, contact_phone, contact_email, contact_website, first_seen_at, score, manual_status, private_note, is_watchlisted"
     if has_column("events", "event_image"):
         select_cols += ", event_image"
     sql = f"SELECT {select_cols} FROM events"
@@ -344,28 +399,41 @@ def list_crawl_runs(limit=30):
 
 
 def list_organizers():
+    events = list_events()
     c = conn()
-    sql = '''
-    SELECT
-      COALESCE(NULLIF(contact_website,''), NULLIF(contact_email,''), NULLIF(contact_phone,'')) AS organizer_key,
-      MIN(name) AS sample_event_name,
-      COUNT(*) AS events_count,
-      SUM(CASE WHEN EXISTS (
-        SELECT 1 FROM products p WHERE p.event_id = events.id AND COALESCE(p.numeric_price, -1)=0 AND p.is_free=1
-      ) THEN 1 ELSE 0 END) AS free_event_count,
-      MAX(first_seen_at) AS last_seen_at,
-      MAX(contact_phone) AS contact_phone,
-      MAX(contact_email) AS contact_email,
-      MAX(contact_website) AS contact_website
-    FROM events
-    WHERE COALESCE(NULLIF(contact_website,''), NULLIF(contact_email,''), NULLIF(contact_phone,'')) IS NOT NULL
-    GROUP BY organizer_key
-    ORDER BY free_event_count DESC, events_count DESC, last_seen_at DESC
-    '''
-    rows = [dict(r) for r in c.execute(sql).fetchall()]
+    free_event_ids = {r[0] for r in c.execute("SELECT DISTINCT event_id FROM products WHERE COALESCE(numeric_price, -1)=0 AND is_free=1").fetchall()}
     c.close()
+    groups = {}
+    for event in events:
+        organizer_key, organizer_type, organizer_value = organizer_identity(event)
+        if not organizer_key:
+            continue
+        group = groups.setdefault(organizer_key, {
+            "organizer_key": organizer_value,
+            "organizer_type": organizer_type,
+            "sample_event_name": event.get("name"),
+            "events_count": 0,
+            "free_event_count": 0,
+            "last_seen_at": event.get("first_seen_at"),
+            "contact_phone": normalize_phone(event.get("contact_phone")) or event.get("contact_phone"),
+            "contact_email": normalize_email(event.get("contact_email")) or event.get("contact_email"),
+            "contact_website": normalize_website(event.get("contact_website")) or event.get("contact_website"),
+        })
+        group["events_count"] += 1
+        if event.get("id") in free_event_ids:
+            group["free_event_count"] += 1
+        if event.get("first_seen_at") and (not group["last_seen_at"] or str(event.get("first_seen_at")) > str(group["last_seen_at"])):
+            group["last_seen_at"] = event.get("first_seen_at")
+        if not group.get("contact_phone") and event.get("contact_phone"):
+            group["contact_phone"] = normalize_phone(event.get("contact_phone")) or event.get("contact_phone")
+        if not group.get("contact_email") and event.get("contact_email"):
+            group["contact_email"] = normalize_email(event.get("contact_email")) or event.get("contact_email")
+        if not group.get("contact_website") and event.get("contact_website"):
+            group["contact_website"] = normalize_website(event.get("contact_website")) or event.get("contact_website")
+    rows = list(groups.values())
     for row in rows:
         row["last_seen_ago"] = time_ago(row.get("last_seen_at"))
+    rows.sort(key=lambda x: (x.get("free_event_count", 0), x.get("events_count", 0), x.get("last_seen_at") or ""), reverse=True)
     return rows
 
 
