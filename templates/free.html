@@ -5,19 +5,30 @@
   <div>
     <div class="eyebrow">Monitoring</div>
     <h1>Free products</h1>
-    <p>Liste des produits gratuits reliés à leur événement source.</p>
+    <p>Liste des produits gratuits avec la date de leur événement, filtre et tri rapides.</p>
   </div>
 </section>
 <section class="panel">
+  <div class="toolbar">
+    <input id="free-search" class="toolbar-input" type="text" placeholder="Rechercher un produit, un événement…">
+    <select id="free-region" class="toolbar-select">
+      <option value="">Toutes les régions</option>
+      {% for r in rows|map(attribute='region')|unique|list|sort %}
+      <option value="{{ r }}">{{ r|capitalize }}</option>
+      {% endfor %}
+    </select>
+    <button id="free-reset" class="btn btn-secondary" type="button">Reset</button>
+  </div>
   <div class="table-wrap">
-    <table class="table">
+    <table class="table" id="free-table">
       <thead>
-        <tr><th>Event</th><th>Region</th><th>Product</th><th>Price</th><th>Status</th><th>Open</th></tr>
+        <tr><th data-sort="event">Event</th><th data-sort="date">Date</th><th data-sort="region">Region</th><th data-sort="product">Product</th><th data-sort="price" data-type="number">Price</th><th data-sort="status">Status</th><th>Open</th></tr>
       </thead>
       <tbody>
         {% for r in rows %}
-        <tr>
+        <tr data-event="{{ (r.event_name or r.event_url)|lower }}" data-date="{{ r.event_date or '' }}" data-region="{{ r.region or '' }}" data-product="{{ r.product_name|lower }}" data-price="{{ r.numeric_price or 0 }}" data-status="{{ r.is_available }}">
           <td><a href="/event/{{ r.event_id }}">{{ r.event_name or r.event_url }}</a></td>
+          <td>{{ r.event_date or '—' }}</td>
           <td>{{ r.region }}</td>
           <td>{{ r.product_name }}</td>
           <td>{{ r.price_text }}</td>
@@ -29,4 +40,8 @@
     </table>
   </div>
 </section>
+{% endblock %}
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='table.js') }}"></script>
+<script>initDataTable('free-table','free-search','free-region','free-reset');</script>
 {% endblock %}

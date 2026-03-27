@@ -149,7 +149,7 @@ def list_events(limit=None):
 
 def list_free(limit=None):
     c = conn()
-    select_cols = "p.*, e.name AS event_name, e.subtitle AS event_subtitle, e.region, e.event_url, e.first_seen_at AS event_first_seen, e.score, e.id AS event_id"
+    select_cols = "p.*, e.name AS event_name, e.subtitle AS event_subtitle, e.event_date AS event_date, e.region, e.event_url, e.first_seen_at AS event_first_seen, e.score, e.id AS event_id"
     if has_column("events", "event_image"):
         select_cols += ", e.event_image AS event_image"
     sql = f"SELECT {select_cols} FROM products p JOIN events e ON e.id = p.event_id WHERE p.is_free = 1 ORDER BY p.last_seen_at DESC"

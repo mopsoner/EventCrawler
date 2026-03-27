@@ -62,12 +62,13 @@
   <div class="table-wrap">
     <table class="table">
       <thead>
-        <tr><th>Event</th><th>Product</th><th>Price</th><th>Status</th><th>Score</th></tr>
+        <tr><th>Event</th><th>Date</th><th>Product</th><th>Price</th><th>Status</th><th>Score</th></tr>
       </thead>
       <tbody>
         {% for r in top_opportunities %}
         <tr>
           <td><a href="/event/{{ r.event_id }}">{{ r.event_name }}</a></td>
+          <td>{{ r.event_date or '—' }}</td>
           <td>{{ r.product_name }}</td>
           <td>{{ r.price_text }}</td>
           <td>

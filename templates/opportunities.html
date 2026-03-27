@@ -5,29 +5,50 @@
   <div>
     <div class="eyebrow">Scoring</div>
     <h1>Early opportunities</h1>
-    <p>Produits gratuits ou disponibles classés en priorité.</p>
+    <p>Produits gratuits ou disponibles classés en priorité, avec date d’événement et tri rapide.</p>
   </div>
 </section>
-<div class="card-grid card-grid-wide">
-  {% for r in rows %}
-  <article class="event-card event-card-block">
-    <div class="event-card-media tall">{% if r.event_image %}<img src="{{ r.event_image }}" alt="{{ r.event_name }}">{% else %}<div class="media-fallback">No image</div>{% endif %}</div>
-    <div class="event-card-body">
-      <div class="event-card-title"><a href="/event/{{ r.event_id }}">{{ r.event_name }}</a></div>
-      {% if r.event_subtitle %}<div class="event-card-subtitle">{{ r.event_subtitle }}</div>{% endif %}
-      <div class="pill-row">
-        {% if r.is_early_free_opportunity %}<span class="badge badge-success">Early free</span>{% endif %}
-        {% if r.is_recent %}<span class="badge badge-warning">Recent</span>{% endif %}
-        {% if r.is_available in (1, true) %}<span class="badge badge-info">Available</span>{% endif %}
-      </div>
-      <div class="product-box">
-        <div class="product-name">{{ r.product_name }}</div>
-        <div class="product-price">{{ r.price_text }}</div>
-      </div>
-      <div class="event-card-meta">{{ r.region }} · Score {{ r.score }}</div>
-      <div class="event-card-footer"><a href="{{ r.event_url }}" class="text-link">Open Bizouk</a></div>
-    </div>
-  </article>
-  {% endfor %}
-</div>
+<section class="panel">
+  <div class="toolbar">
+    <input id="opp-search" class="toolbar-input" type="text" placeholder="Rechercher un produit, un événement…">
+    <select id="opp-region" class="toolbar-select">
+      <option value="">Toutes les régions</option>
+      {% for r in rows|map(attribute='region')|unique|list|sort %}
+      <option value="{{ r }}">{{ r|capitalize }}</option>
+      {% endfor %}
+    </select>
+    <button id="opp-reset" class="btn btn-secondary" type="button">Reset</button>
+  </div>
+  <div class="table-wrap">
+    <table class="table" id="opp-table">
+      <thead>
+        <tr><th data-sort="event">Event</th><th data-sort="date">Date</th><th data-sort="region">Region</th><th data-sort="product">Product</th><th data-sort="price" data-type="number">Price</th><th data-sort="status">Status</th><th data-sort="score" data-type="number">Score</th></tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr data-event="{{ (r.event_name or '')|lower }}" data-date="{{ r.event_date or '' }}" data-region="{{ r.region or '' }}" data-product="{{ r.product_name|lower }}" data-price="{{ r.numeric_price or 0 }}" data-status="{{ 'available' if r.is_available in (1, true) else 'unavailable' if r.is_available in (0, false) else 'unknown' }}" data-score="{{ r.score or 0 }}">
+          <td>
+            <a href="/event/{{ r.event_id }}">{{ r.event_name }}</a>
+            {% if r.event_subtitle %}<div class="cell-sub">{{ r.event_subtitle }}</div>{% endif %}
+          </td>
+          <td>{{ r.event_date or '—' }}</td>
+          <td>{{ r.region }}</td>
+          <td>{{ r.product_name }}</td>
+          <td>{{ r.price_text }}</td>
+          <td>
+            {% if r.is_early_free_opportunity %}<span class="badge badge-success">Early free</span>{% endif %}
+            {% if r.is_recent %}<span class="badge badge-warning">Recent</span>{% endif %}
+            {% if r.is_available in (1, true) %}<span class="badge badge-info">Available</span>{% elif r.is_available in (0, false) %}<span class="badge badge-danger">Unavailable</span>{% else %}<span class="badge">Unknown</span>{% endif %}
+          </td>
+          <td><span class="badge badge-info">{{ r.score }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='table.js') }}"></script>
+<script>initDataTable('opp-table','opp-search','opp-region','opp-reset');</script>
 {% endblock %}

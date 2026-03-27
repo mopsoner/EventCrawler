@@ -5,26 +5,56 @@
   <div>
     <div class="eyebrow">Catalogue</div>
     <h1>All events</h1>
-    <p>Toutes les fiches détectées avec contacts, score et visuel quand disponible.</p>
+    <p>Toutes les fiches détectées avec la date de l’événement, les contacts et le score.</p>
   </div>
 </section>
-<div class="card-grid card-grid-wide">
-  {% for e in events %}
-  <article class="event-card event-card-block">
-    <div class="event-card-media tall">{% if e.event_image %}<img src="{{ e.event_image }}" alt="{{ e.name }}">{% else %}<div class="media-fallback">No image</div>{% endif %}</div>
-    <div class="event-card-body">
-      <div class="event-card-title"><a href="/event/{{ e.id }}">{{ e.name or e.event_url }}</a></div>
-      {% if e.subtitle %}<div class="event-card-subtitle">{{ e.subtitle }}</div>{% endif %}
-      <div class="event-card-meta">{{ e.region }} · {{ e.event_date or 'No date' }}</div>
-      <div class="event-card-meta">{{ e.address or e.city or 'No location' }}</div>
-      <div class="info-list">
-        <div>📞 {{ e.contact_phone or '—' }}</div>
-        <div>✉️ {{ e.contact_email or '—' }}</div>
-        <div>🌐 {% if e.contact_website %}<a href="{{ e.contact_website }}">{{ e.contact_website }}</a>{% else %}—{% endif %}</div>
-      </div>
-      <div class="event-card-footer"><span class="badge badge-info">Score {{ e.score }}</span></div>
-    </div>
-  </article>
-  {% endfor %}
-</div>
+<section class="panel">
+  <div class="toolbar">
+    <input id="events-search" class="toolbar-input" type="text" placeholder="Rechercher un événement, une ville, un contact…">
+    <select id="events-region" class="toolbar-select">
+      <option value="">Toutes les régions</option>
+      {% for e in events|map(attribute='region')|unique|list|sort %}
+      <option value="{{ e }}">{{ e|capitalize }}</option>
+      {% endfor %}
+    </select>
+    <button id="events-reset" class="btn btn-secondary" type="button">Reset</button>
+  </div>
+  <div class="table-wrap">
+    <table class="table" id="events-table">
+      <thead>
+        <tr>
+          <th data-sort="name">Event</th>
+          <th data-sort="date">Date</th>
+          <th data-sort="region">Region</th>
+          <th data-sort="city">City</th>
+          <th>Contacts</th>
+          <th data-sort="score" data-type="number">Score</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in events %}
+        <tr data-name="{{ (e.name or e.event_url)|lower }}" data-date="{{ e.event_date or '' }}" data-region="{{ e.region or '' }}" data-city="{{ e.city or '' }}" data-score="{{ e.score or 0 }}">
+          <td>
+            <a href="/event/{{ e.id }}">{{ e.name or e.event_url }}</a>
+            {% if e.subtitle %}<div class="cell-sub">{{ e.subtitle }}</div>{% endif %}
+          </td>
+          <td>{{ e.event_date or '—' }}</td>
+          <td>{{ e.region }}</td>
+          <td>{{ e.city or '—' }}</td>
+          <td>
+            <div class="cell-stack">📞 {{ e.contact_phone or '—' }}</div>
+            <div class="cell-stack">✉️ {{ e.contact_email or '—' }}</div>
+            <div class="cell-stack">🌐 {% if e.contact_website %}<a href="{{ e.contact_website }}">site</a>{% else %}—{% endif %}</div>
+          </td>
+          <td><span class="badge badge-info">{{ e.score }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='table.js') }}"></script>
+<script>initDataTable('events-table','events-search','events-region','events-reset');</script>
 {% endblock %}
