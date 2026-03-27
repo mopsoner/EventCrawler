@@ -1,0 +1,6 @@
+{% extends 'base.html' %}
+{% block title %}Organizers · EventCrawler V2{% endblock %}
+{% block content %}
+<section class="page-head"><div><div class="eyebrow">Organizer intelligence</div><h1>Organizers</h1><p>Regroupement par site, email ou téléphone pour identifier les promoteurs les plus actifs.</p></div></section>
+<section class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>Organizer</th><th>Events</th><th>Free events</th><th>Last seen</th><th>Phone</th><th>Email</th><th>Website</th></tr></thead><tbody>{% for r in rows %}<tr><td>{{ r.organizer_key }}</td><td>{{ r.events_count }}</td><td>{{ r.free_event_count }}</td><td>{{ r.last_seen_ago }}</td><td>{{ r.contact_phone or '—' }}</td><td>{{ r.contact_email or '—' }}</td><td>{% if r.contact_website %}<a href="{{ r.contact_website }}">{{ r.contact_website }}</a>{% else %}—{% endif %}</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

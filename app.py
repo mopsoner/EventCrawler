@@ -61,6 +61,39 @@ def init_db():
             last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(event_id, product_name, price_text)
         );
+        CREATE TABLE IF NOT EXISTS product_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id INTEGER,
+            product_name TEXT,
+            change_type TEXT,
+            old_price REAL,
+            new_price REAL,
+            old_is_free INTEGER,
+            new_is_free INTEGER,
+            old_is_available INTEGER,
+            new_is_available INTEGER,
+            observed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS crawl_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mode TEXT,
+            regions TEXT,
+            started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            finished_at TEXT,
+            status TEXT,
+            events_queued INTEGER DEFAULT 0,
+            events_processed INTEGER DEFAULT 0,
+            errors_count INTEGER DEFAULT 0,
+            notes TEXT
+        );
+        CREATE TABLE IF NOT EXISTS crawl_errors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            crawl_run_id INTEGER,
+            scope TEXT,
+            target TEXT,
+            error_text TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         '''
     )
     ensure_column(cur, "events", "event_external_id", "event_external_id TEXT")
@@ -68,6 +101,9 @@ def init_db():
     ensure_column(cur, "events", "contact_website", "contact_website TEXT")
     ensure_column(cur, "events", "event_image", "event_image TEXT")
     ensure_column(cur, "events", "subtitle", "subtitle TEXT")
+    ensure_column(cur, "events", "manual_status", "manual_status TEXT")
+    ensure_column(cur, "events", "private_note", "private_note TEXT")
+    ensure_column(cur, "events", "is_watchlisted", "is_watchlisted INTEGER DEFAULT 0")
     c.commit()
     c.close()
 
@@ -147,6 +183,7 @@ def decorate_rows(rows):
     for row in rows:
         row["added_at"] = row.get("first_seen_at") or row.get("event_first_seen")
         row["added_ago"] = time_ago(row.get("added_at"))
+        row["is_watchlisted"] = bool(row.get("is_watchlisted", 0))
     return rows
 
 
@@ -157,20 +194,25 @@ def stats():
         "events": cur.execute("SELECT COUNT(*) FROM events").fetchone()[0],
         "free_products": cur.execute("SELECT COUNT(*) FROM products WHERE COALESCE(numeric_price, -1) = 0 AND is_free = 1").fetchone()[0],
         "free_available": cur.execute("SELECT COUNT(*) FROM products WHERE COALESCE(numeric_price, -1) = 0 AND is_free = 1 AND is_available = 1").fetchone()[0],
+        "watchlist": cur.execute("SELECT COUNT(*) FROM events WHERE COALESCE(is_watchlisted,0)=1").fetchone()[0],
+        "organizers": cur.execute("SELECT COUNT(*) FROM (SELECT COALESCE(NULLIF(contact_website,''), NULLIF(contact_email,''), NULLIF(contact_phone,'')) AS organizer_key FROM events WHERE COALESCE(NULLIF(contact_website,''), NULLIF(contact_email,''), NULLIF(contact_phone,'')) IS NOT NULL GROUP BY organizer_key)").fetchone()[0],
         "last_seen_at": cur.execute("SELECT MAX(last_seen_at) FROM events").fetchone()[0],
     }
     c.close()
     return out
 
 
-def list_events(limit=None):
+def list_events(limit=None, watchlist_only=False):
     c = conn()
-    select_cols = "id, event_url, region, name, subtitle, event_date, city, address, contact_phone, contact_email, first_seen_at, score"
+    select_cols = "id, event_url, region, name, subtitle, event_date, city, address, contact_phone, contact_email, first_seen_at, score, manual_status, private_note, is_watchlisted"
     if has_column("events", "contact_website"):
         select_cols += ", contact_website"
     if has_column("events", "event_image"):
         select_cols += ", event_image"
-    sql = f"SELECT {select_cols} FROM events ORDER BY score DESC, last_seen_at DESC"
+    sql = f"SELECT {select_cols} FROM events"
+    if watchlist_only:
+        sql += " WHERE COALESCE(is_watchlisted,0)=1"
+    sql += " ORDER BY score DESC, last_seen_at DESC"
     if limit:
         sql += f" LIMIT {int(limit)}"
     rows = [dict(r) for r in c.execute(sql).fetchall()]
@@ -180,7 +222,7 @@ def list_events(limit=None):
 
 def list_free(limit=None):
     c = conn()
-    select_cols = "p.*, e.name AS event_name, e.subtitle AS event_subtitle, e.event_date AS event_date, e.region, e.event_url, e.first_seen_at AS event_first_seen, e.score, e.id AS event_id"
+    select_cols = "p.*, e.name AS event_name, e.subtitle AS event_subtitle, e.event_date AS event_date, e.region, e.event_url, e.first_seen_at AS event_first_seen, e.score, e.id AS event_id, e.manual_status AS manual_status, e.is_watchlisted AS is_watchlisted"
     if has_column("events", "event_image"):
         select_cols += ", e.event_image AS event_image"
     sql = f"SELECT {select_cols} FROM products p JOIN events e ON e.id = p.event_id WHERE p.is_free = 1 AND COALESCE(p.numeric_price, -1) = 0 ORDER BY p.last_seen_at DESC"
@@ -202,6 +244,57 @@ def list_opportunities(limit=None):
     return rows[:limit] if limit else rows
 
 
+def list_activity(limit=100):
+    c = conn()
+    sql = '''
+    SELECT ph.*, e.name AS event_name, e.region, e.event_url, e.id AS event_id
+    FROM product_history ph
+    LEFT JOIN events e ON e.id = ph.event_id
+    ORDER BY ph.observed_at DESC
+    LIMIT ?
+    '''
+    rows = [dict(r) for r in c.execute(sql, (limit,)).fetchall()]
+    c.close()
+    for row in rows:
+        row["observed_ago"] = time_ago(row.get("observed_at"))
+    return rows
+
+
+def list_crawl_runs(limit=30):
+    c = conn()
+    rows = [dict(r) for r in c.execute("SELECT * FROM crawl_runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
+    c.close()
+    for row in rows:
+        row["started_ago"] = time_ago(row.get("started_at"))
+    return rows
+
+
+def list_organizers():
+    c = conn()
+    sql = '''
+    SELECT
+      COALESCE(NULLIF(contact_website,''), NULLIF(contact_email,''), NULLIF(contact_phone,'')) AS organizer_key,
+      MIN(name) AS sample_event_name,
+      COUNT(*) AS events_count,
+      SUM(CASE WHEN EXISTS (
+        SELECT 1 FROM products p WHERE p.event_id = events.id AND COALESCE(p.numeric_price, -1)=0 AND p.is_free=1
+      ) THEN 1 ELSE 0 END) AS free_event_count,
+      MAX(first_seen_at) AS last_seen_at,
+      MAX(contact_phone) AS contact_phone,
+      MAX(contact_email) AS contact_email,
+      MAX(contact_website) AS contact_website
+    FROM events
+    WHERE COALESCE(NULLIF(contact_website,''), NULLIF(contact_email,''), NULLIF(contact_phone,'')) IS NOT NULL
+    GROUP BY organizer_key
+    ORDER BY free_event_count DESC, events_count DESC, last_seen_at DESC
+    '''
+    rows = [dict(r) for r in c.execute(sql).fetchall()]
+    c.close()
+    for row in rows:
+        row["last_seen_ago"] = time_ago(row.get("last_seen_at"))
+    return rows
+
+
 def get_event(event_id):
     c = conn()
     event = c.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
@@ -211,7 +304,11 @@ def get_event(event_id):
     out = dict(event)
     out["added_at"] = out.get("first_seen_at")
     out["added_ago"] = time_ago(out.get("first_seen_at"))
+    out["is_watchlisted"] = bool(out.get("is_watchlisted", 0))
     out["products"] = [dict(r) for r in c.execute("SELECT * FROM products WHERE event_id=? ORDER BY last_seen_at DESC", (event_id,)).fetchall()]
+    out["history"] = [dict(r) for r in c.execute("SELECT * FROM product_history WHERE event_id=? ORDER BY observed_at DESC LIMIT 50", (event_id,)).fetchall()]
+    for row in out["history"]:
+        row["observed_ago"] = time_ago(row.get("observed_at"))
     c.close()
     return out
 
@@ -226,6 +323,9 @@ def dashboard():
         crawl_status=read_crawl_status(),
         top_events=list_events(limit=6),
         top_opportunities=list_opportunities(limit=8),
+        watchlist_events=list_events(limit=6, watchlist_only=True),
+        recent_activity=list_activity(limit=8),
+        recent_runs=list_crawl_runs(limit=6),
     )
 
 
@@ -246,6 +346,11 @@ def events():
     return render_template("events.html", events=list_events())
 
 
+@app.route("/watchlist")
+def watchlist():
+    return render_template("watchlist.html", events=list_events(watchlist_only=True))
+
+
 @app.route("/free")
 def free():
     return render_template("free.html", rows=list_free())
@@ -256,9 +361,39 @@ def opportunities():
     return render_template("opportunities.html", rows=list_opportunities())
 
 
+@app.route("/activity")
+def activity():
+    return render_template("activity.html", rows=list_activity(200), crawl_runs=list_crawl_runs(30))
+
+
+@app.route("/organizers")
+def organizers():
+    return render_template("organizers.html", rows=list_organizers())
+
+
 @app.route("/event/<int:event_id>")
 def event_detail(event_id):
     return render_template("event.html", event=get_event(event_id))
+
+
+@app.route("/event/<int:event_id>/watchlist", methods=["POST"])
+def toggle_watchlist(event_id):
+    c = conn()
+    c.execute("UPDATE events SET is_watchlisted = CASE WHEN COALESCE(is_watchlisted,0)=1 THEN 0 ELSE 1 END WHERE id=?", (event_id,))
+    c.commit()
+    c.close()
+    return redirect(url_for("event_detail", event_id=event_id))
+
+
+@app.route("/event/<int:event_id>/notes", methods=["POST"])
+def save_event_notes(event_id):
+    manual_status = (request.form.get("manual_status") or "").strip()
+    private_note = (request.form.get("private_note") or "").strip()
+    c = conn()
+    c.execute("UPDATE events SET manual_status=?, private_note=? WHERE id=?", (manual_status, private_note, event_id))
+    c.commit()
+    c.close()
+    return redirect(url_for("event_detail", event_id=event_id))
 
 
 @app.route("/config", methods=["GET", "POST"])
@@ -281,7 +416,6 @@ def config_page():
         }
         save_config(new_config)
         return redirect(url_for("config_page", saved=1))
-
     saved = request.args.get("saved") == "1"
     return render_template("config.html", config=load_config(), saved=saved)
 
@@ -299,6 +433,11 @@ def api_free():
 @app.route("/api/opportunities")
 def api_opportunities():
     return jsonify(list_opportunities())
+
+
+@app.route("/api/activity")
+def api_activity():
+    return jsonify(list_activity())
 
 
 @app.route("/api/config")

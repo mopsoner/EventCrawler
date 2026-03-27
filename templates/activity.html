@@ -1,0 +1,7 @@
+{% extends 'base.html' %}
+{% block title %}Activity · EventCrawler V2{% endblock %}
+{% block content %}
+<section class="page-head"><div><div class="eyebrow">Timeline</div><h1>Activity</h1><p>Historique des changements produits et runs de crawl.</p></div></section>
+<section class="panel"><div class="panel-header"><div><h2>Product history</h2></div></div><div class="table-wrap"><table class="table"><thead><tr><th>Event</th><th>Product</th><th>Change</th><th>Old</th><th>New</th><th>When</th></tr></thead><tbody>{% for r in rows %}<tr><td>{% if r.event_id %}<a href="/event/{{ r.event_id }}">{{ r.event_name or '—' }}</a>{% else %}—{% endif %}</td><td>{{ r.product_name }}</td><td>{{ r.change_type }}</td><td>{% if r.old_price is not none %}{{ r.old_price }}€{% else %}—{% endif %}</td><td>{% if r.new_price is not none %}{{ r.new_price }}€{% else %}—{% endif %}</td><td>{{ r.observed_ago }}</td></tr>{% endfor %}</tbody></table></div></section>
+<section class="panel"><div class="panel-header"><div><h2>Crawl runs</h2></div></div><div class="table-wrap"><table class="table"><thead><tr><th>Started</th><th>Regions</th><th>Status</th><th>Queued</th><th>Processed</th><th>Errors</th></tr></thead><tbody>{% for r in crawl_runs %}<tr><td>{{ r.started_ago }}</td><td>{{ r.regions or '—' }}</td><td>{{ r.status or '—' }}</td><td>{{ r.events_queued }}</td><td>{{ r.events_processed }}</td><td>{{ r.errors_count }}</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

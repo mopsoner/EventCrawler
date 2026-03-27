@@ -1,0 +1,6 @@
+{% extends 'base.html' %}
+{% block title %}Watchlist · EventCrawler V2{% endblock %}
+{% block content %}
+<section class="page-head"><div><div class="eyebrow">Manual tracking</div><h1>Watchlist</h1><p>Événements épinglés pour suivi prioritaire.</p></div></section>
+<section class="panel"><div class="table-wrap"><table class="table"><thead><tr><th>Event</th><th>Date</th><th>Ajouté</th><th>Status</th><th>Score</th></tr></thead><tbody>{% for e in events %}<tr><td><a href="/event/{{ e.id }}">{{ e.name }}</a></td><td>{{ e.event_date or '—' }}</td><td>{{ e.added_ago }}</td><td>{{ e.manual_status or '—' }}</td><td><span class="badge badge-info">{{ e.score }}</span></td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

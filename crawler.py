@@ -85,6 +85,39 @@ def init_db():
             last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(event_id, product_name, price_text)
         );
+        CREATE TABLE IF NOT EXISTS product_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id INTEGER,
+            product_name TEXT,
+            change_type TEXT,
+            old_price REAL,
+            new_price REAL,
+            old_is_free INTEGER,
+            new_is_free INTEGER,
+            old_is_available INTEGER,
+            new_is_available INTEGER,
+            observed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS crawl_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mode TEXT,
+            regions TEXT,
+            started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            finished_at TEXT,
+            status TEXT,
+            events_queued INTEGER DEFAULT 0,
+            events_processed INTEGER DEFAULT 0,
+            errors_count INTEGER DEFAULT 0,
+            notes TEXT
+        );
+        CREATE TABLE IF NOT EXISTS crawl_errors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            crawl_run_id INTEGER,
+            scope TEXT,
+            target TEXT,
+            error_text TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         '''
     )
     ensure_column(cur, "events", "event_external_id", "event_external_id TEXT")
@@ -92,8 +125,44 @@ def init_db():
     ensure_column(cur, "events", "contact_website", "contact_website TEXT")
     ensure_column(cur, "events", "event_image", "event_image TEXT")
     ensure_column(cur, "events", "subtitle", "subtitle TEXT")
+    ensure_column(cur, "events", "manual_status", "manual_status TEXT")
+    ensure_column(cur, "events", "private_note", "private_note TEXT")
+    ensure_column(cur, "events", "is_watchlisted", "is_watchlisted INTEGER DEFAULT 0")
     c.commit()
     c.close()
+
+
+def create_crawl_run(regions):
+    c = conn()
+    cur = c.cursor()
+    cur.execute("INSERT INTO crawl_runs(mode, regions, status) VALUES (?, ?, ?)", ("manual", ",".join(regions), "running"))
+    run_id = cur.lastrowid
+    c.commit()
+    c.close()
+    return run_id
+
+
+def update_crawl_run(run_id, **fields):
+    if not fields:
+        return
+    c = conn()
+    keys = list(fields.keys())
+    sql = "UPDATE crawl_runs SET " + ", ".join([f"{k}=?" for k in keys]) + " WHERE id=?"
+    c.execute(sql, [fields[k] for k in keys] + [run_id])
+    c.commit()
+    c.close()
+
+
+def log_crawl_error(run_id, scope, target, error_text):
+    c = conn()
+    c.execute("INSERT INTO crawl_errors(crawl_run_id, scope, target, error_text) VALUES (?, ?, ?, ?)", (run_id, scope, target, str(error_text)[:2000]))
+    c.commit()
+    c.close()
+
+
+def save_status(data):
+    STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STATUS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def normalize_text(text):
@@ -150,17 +219,23 @@ def extract_event_image(soup):
     return None
 
 
-def score_event(name, region, products):
+def score_event(name, region, products, contact, has_image, event_date):
     score = 0
     low = (name or "").lower()
-    if "carnaval" in low or "carnival" in low:
+    if any(k in low for k in ["carnaval", "carnival", "jouvert", "boat", "pre-registration", "pré-inscription", "dreamland"]):
         score += 30
     if region in {"london", "rotterdam", "paris"}:
-        score += 20
+        score += 15
     if any(p.get("is_free") for p in products):
         score += 15
     if any(p.get("is_free") and p.get("is_available") is True for p in products):
         score += 25
+    if contact.get("contact_phone") or contact.get("contact_email") or contact.get("contact_website"):
+        score += 10
+    if has_image:
+        score += 5
+    if event_date:
+        score += 5
     return min(score, 100)
 
 
@@ -281,11 +356,7 @@ def extract_contact_info(lines):
 
 def is_non_product_name(line):
     low = (line or "").lower()
-    return any(x in low for x in [
-        "total amount", "montant total", "tickets", "billets", "transportation",
-        "pay with friends", "details", "sold out", "upcoming", "contact organizer",
-        "view my itenary", "view my itinerary", "log in", "register now", "starting from"
-    ])
+    return any(x in low for x in ["total amount", "montant total", "tickets", "billets", "transportation", "pay with friends", "details", "sold out", "upcoming", "contact organizer", "view my itenary", "view my itinerary", "log in", "register now", "starting from"])
 
 
 def extract_products_from_dom(soup):
@@ -337,7 +408,8 @@ def build_event_from_item(item, session=None):
     products = extract_products_from_dom(soup)
     title = soup.title.get_text(" ", strip=True) if soup.title else url
     name = header["name"] or normalize_text(title)
-    return {"event_url": url, "event_slug": slug, "event_external_id": external_id, "region": region, "name": name, "subtitle": header.get("subtitle"), "event_date": header.get("event_date"), "city": header.get("city"), "address": header.get("address"), "contact_phone": contact["contact_phone"], "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": extract_event_image(soup), "products": products, "score": score_event(name, region, products)}
+    image = extract_event_image(soup)
+    return {"event_url": url, "event_slug": slug, "event_external_id": external_id, "region": region, "name": name, "subtitle": header.get("subtitle"), "event_date": header.get("event_date"), "city": header.get("city"), "address": header.get("address"), "contact_phone": contact["contact_phone"], "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": image, "products": products, "score": score_event(name, region, products, contact, bool(image), header.get("event_date"))}
 
 
 def worker(item):
@@ -346,6 +418,13 @@ def worker(item):
         return build_event_from_item(item, session=session)
     finally:
         session.close()
+
+
+def record_product_change(cur, event_id, product_name, change_type, old_price, new_price, old_is_free, new_is_free, old_is_available, new_is_available):
+    cur.execute(
+        "INSERT INTO product_history(event_id, product_name, change_type, old_price, new_price, old_is_free, new_is_free, old_is_available, new_is_available) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (event_id, product_name, change_type, old_price, new_price, old_is_free, new_is_free, old_is_available, new_is_available),
+    )
 
 
 def upsert_event(event):
@@ -360,13 +439,26 @@ def upsert_event(event):
         cur.execute("INSERT INTO events(event_url, event_external_id, event_slug, region, name, subtitle, event_date, city, address, contact_phone, contact_email, contact_website, event_image, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (event["event_url"], event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("subtitle"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0)))
         event_id = cur.lastrowid
     for p in event.get("products", []):
-        cur.execute("SELECT id FROM products WHERE event_id=? AND product_name=? AND price_text=?", (event_id, p.get("product_name"), p.get("price_text")))
+        cur.execute("SELECT id, numeric_price, is_free, is_available FROM products WHERE event_id=? AND product_name=? AND price_text=?", (event_id, p.get("product_name"), p.get("price_text")))
         old = cur.fetchone()
         avail = 1 if p.get("is_available") is True else 0 if p.get("is_available") is False else None
         if old:
+            old_price = old["numeric_price"]
+            old_is_free = old["is_free"]
+            old_is_available = old["is_available"]
             cur.execute("UPDATE products SET numeric_price=?, is_free=?, is_available=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?", (p.get("numeric_price"), 1 if p.get("is_free") else 0, avail, old["id"]))
+            if old_price != p.get("numeric_price") or old_is_free != (1 if p.get("is_free") else 0) or old_is_available != avail:
+                change_type = "STATUS_CHANGE"
+                if old_price != p.get("numeric_price"):
+                    change_type = "PRICE_CHANGE"
+                elif old_is_available != avail:
+                    change_type = "AVAILABILITY_CHANGE"
+                elif old_is_free != (1 if p.get("is_free") else 0):
+                    change_type = "FREE_CHANGE"
+                record_product_change(cur, event_id, p.get("product_name"), change_type, old_price, p.get("numeric_price"), old_is_free, 1 if p.get("is_free") else 0, old_is_available, avail)
         else:
             cur.execute("INSERT INTO products(event_id, product_name, price_text, numeric_price, is_free, is_available) VALUES (?, ?, ?, ?, ?, ?)", (event_id, p.get("product_name"), p.get("price_text"), p.get("numeric_price"), 1 if p.get("is_free") else 0, avail))
+            record_product_change(cur, event_id, p.get("product_name"), "NEW_PRODUCT", None, p.get("numeric_price"), None, 1 if p.get("is_free") else 0, None, avail)
     c.commit()
     c.close()
 
@@ -375,8 +467,11 @@ def run():
     init_db()
     regions = enabled_regions()
     selected = list(regions.keys())
+    crawl_run_id = create_crawl_run(selected)
     save_status({"running": True, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": datetime.utcnow().isoformat(), "finished_at": None, "last_error": None})
     all_items = []
+    processed = 0
+    errors = 0
     try:
         for region, start_url in regions.items():
             try:
@@ -386,8 +481,11 @@ def run():
                     item["region"] = region
                 all_items.extend(region_items)
             except Exception as exc:
-                print(f"[ERROR] region {region}: {exc}")
+                errors += 1
+                log_crawl_error(crawl_run_id, "region", region, exc)
+        update_crawl_run(crawl_run_id, events_queued=len(all_items))
         if not all_items:
+            update_crawl_run(crawl_run_id, finished_at=datetime.utcnow().isoformat(), status="empty", errors_count=errors, notes="No events found")
             save_status({"running": False, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": None, "finished_at": datetime.utcnow().isoformat(), "last_error": "No events found"})
             return
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -397,11 +495,16 @@ def run():
                 try:
                     event = future.result()
                     upsert_event(event)
-                    print(f"[OK] {item['region']} -> {item['external_id']} -> {item['url']}")
+                    processed += 1
                 except Exception as exc:
-                    print(f"[ERROR] event {item['url']}: {exc}")
+                    errors += 1
+                    log_crawl_error(crawl_run_id, "event", item.get("url"), exc)
+        update_crawl_run(crawl_run_id, finished_at=datetime.utcnow().isoformat(), status="success", events_processed=processed, errors_count=errors)
         save_status({"running": False, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": None, "finished_at": datetime.utcnow().isoformat(), "last_error": None})
     except Exception as exc:
+        errors += 1
+        log_crawl_error(crawl_run_id, "run", "global", exc)
+        update_crawl_run(crawl_run_id, finished_at=datetime.utcnow().isoformat(), status="failed", events_processed=processed, errors_count=errors, notes=str(exc)[:500])
         save_status({"running": False, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": None, "finished_at": datetime.utcnow().isoformat(), "last_error": str(exc)})
         raise
 
