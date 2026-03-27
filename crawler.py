@@ -339,6 +339,7 @@ def extract_contact_info(soup, lines):
     seen = set()
     candidate_lines = [x for x in candidate_lines if not (x in seen or seen.add(x))]
 
+    contact_block_text = "\n".join(candidate_lines)
     contact_phone = None
     contact_email = None
     contact_website = None
@@ -347,27 +348,17 @@ def extract_contact_info(soup, lines):
         low = line.lower()
         if ("infoline" in low or "whatsapp" in low or low.startswith("phone")) and not contact_phone:
             contact_phone = extract_phone(line)
-        if (low.startswith("site") or low.startswith("website") or "http" in low) and not contact_website:
+        if (low.startswith("site") or low.startswith("website")) and not contact_website:
             contact_website = extract_website(line)
         if not contact_email:
             contact_email = extract_email(line)
 
-    if not contact_website:
-        for a in soup.select('a[href]'):
-            href = (a.get('href') or '').strip()
-            if href.startswith('http') and 'bizouk.com' not in href.lower():
-                contact_website = href
-                break
-
     if not contact_phone:
-        prioritized_text = "\n".join(candidate_lines) if candidate_lines else "\n".join(lines)
-        contact_phone = extract_phone(prioritized_text)
+        contact_phone = extract_phone(contact_block_text)
     if not contact_email:
-        prioritized_text = "\n".join(candidate_lines) if candidate_lines else "\n".join(lines)
-        contact_email = extract_email(prioritized_text)
+        contact_email = extract_email(contact_block_text)
     if not contact_website:
-        prioritized_text = "\n".join(candidate_lines) if candidate_lines else "\n".join(lines)
-        contact_website = extract_website(prioritized_text)
+        contact_website = extract_website(contact_block_text)
 
     return {
         "contact_phone": contact_phone,
