@@ -1,0 +1,19 @@
+<!doctype html>
+<html><body>
+{% if event %}
+<h1>{{ event.name or event.event_url }}</h1>
+<p><a href="{{ event.event_url }}">Open Bizouk event</a></p>
+<p>Region: {{ event.region }} | Date: {{ event.event_date }}</p>
+<p>City: {{ event.city }} | Address: {{ event.address }}</p>
+<p>Phone: {{ event.contact_phone }} | Email: {{ event.contact_email }}</p>
+<p>Website: {% if event.contact_website %}<a href="{{ event.contact_website }}">{{ event.contact_website }}</a>{% endif %}</p>
+<h2>Products</h2>
+<ul>
+{% for p in event.products %}
+<li>{{ p.product_name }} - {{ p.price_text }} - free={{ p.is_free }} - available={{ p.is_available }}</li>
+{% endfor %}
+</ul>
+{% else %}
+<p>Event not found</p>
+{% endif %}
+</body></html>

@@ -1,0 +1,18 @@
+<!doctype html>
+<html><body>
+<h1>Free Products</h1>
+<p><a href="/">Dashboard</a></p>
+<table border="1">
+<tr><th>Event</th><th>Region</th><th>Product</th><th>Price</th><th>Available</th><th>Event URL</th></tr>
+{% for r in rows %}
+<tr>
+  <td><a href="/event/{{ r.event_id }}">{{ r.event_name or r.event_url }}</a></td>
+  <td>{{ r.region }}</td>
+  <td>{{ r.product_name }}</td>
+  <td>{{ r.price_text }}</td>
+  <td>{{ r.is_available }}</td>
+  <td><a href="{{ r.event_url }}">open</a></td>
+</tr>
+{% endfor %}
+</table>
+</body></html>

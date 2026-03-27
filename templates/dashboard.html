@@ -1,0 +1,40 @@
+<!doctype html>
+<html><body>
+<h1>EventCrawler</h1>
+<ul>
+  <li>Events: {{ stats.events }}</li>
+  <li>Free products: {{ stats.free_products }}</li>
+  <li>Free available: {{ stats.free_available }}</li>
+  <li>Last crawl: {{ stats.last_seen_at }}</li>
+</ul>
+<p>
+  <a href="/events">Events</a> |
+  <a href="/free">Free</a> |
+  <a href="/opportunities">Opportunities</a> |
+  <a href="/config">Config</a>
+</p>
+{% if request.args.get('started') == '1' %}<p><strong>Crawl started.</strong></p>{% endif %}
+{% if request.args.get('error') == 'no_region' %}<p><strong>Select at least one enabled region.</strong></p>{% endif %}
+<p>
+  Crawl status:
+  {% if crawl_status.running %}
+    <strong>running</strong> ({{ crawl_status.regions|join(', ') }})
+  {% else %}
+    <strong>idle</strong>
+  {% endif %}
+</p>
+<form method="post" action="/crawl">
+  <fieldset>
+    <legend>Run crawl now</legend>
+    {% for name, region in config.regions.items() %}
+      {% if region.enabled %}
+      <label style="display:block;margin-bottom:6px;">
+        <input type="checkbox" name="regions" value="{{ name }}" checked>
+        {{ name }}
+      </label>
+      {% endif %}
+    {% endfor %}
+  </fieldset>
+  <p><button type="submit">Start crawl</button></p>
+</form>
+</body></html>

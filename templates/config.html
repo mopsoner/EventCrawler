@@ -1,0 +1,38 @@
+<!doctype html>
+<html><body>
+<h1>Configuration</h1>
+<p><a href="/">Dashboard</a></p>
+{% if saved %}<p><strong>Configuration saved.</strong></p>{% endif %}
+<form method="post">
+  <p>
+    <label>Max workers<br>
+      <input type="number" name="max_workers" min="1" max="32" value="{{ config.max_workers }}">
+    </label>
+  </p>
+  <p>
+    <label>Request timeout (seconds)<br>
+      <input type="number" name="request_timeout" min="5" max="180" value="{{ config.request_timeout }}">
+    </label>
+  </p>
+  <p>
+    <label>User-Agent<br>
+      <input type="text" name="user_agent" value="{{ config.user_agent }}" style="width: 480px;">
+    </label>
+  </p>
+  <h2>Regions</h2>
+  {% for name, region in config.regions.items() %}
+    <fieldset style="margin-bottom: 12px;">
+      <legend>{{ name }}</legend>
+      <label>
+        <input type="checkbox" name="region_enabled_{{ name }}" {% if region.enabled %}checked{% endif %}>
+        Enabled
+      </label>
+      <br><br>
+      <label>URL<br>
+        <input type="text" name="region_url_{{ name }}" value="{{ region.url }}" style="width: 600px;">
+      </label>
+    </fieldset>
+  {% endfor %}
+  <p><button type="submit">Save config</button></p>
+</form>
+</body></html>
