@@ -5,7 +5,7 @@
   <div>
     <div class="eyebrow">Catalogue</div>
     <h1>All events</h1>
-    <p>Toutes les fiches détectées avec la date de l’événement, les contacts et le score.</p>
+    <p>Toutes les fiches détectées avec la date de l’événement, la date d’ajout et des filtres plus avancés.</p>
   </div>
 </section>
 <section class="panel">
@@ -17,6 +17,12 @@
       <option value="{{ e }}">{{ e|capitalize }}</option>
       {% endfor %}
     </select>
+    <select id="events-city" class="toolbar-select">
+      <option value="">Toutes les villes</option>
+      {% for c in events|map(attribute='city')|reject('equalto', None)|unique|list|sort %}
+      <option value="{{ c }}">{{ c }}</option>
+      {% endfor %}
+    </select>
     <button id="events-reset" class="btn btn-secondary" type="button">Reset</button>
   </div>
   <div class="table-wrap">
@@ -24,7 +30,8 @@
       <thead>
         <tr>
           <th data-sort="name">Event</th>
-          <th data-sort="date">Date</th>
+          <th data-sort="date">Date event</th>
+          <th data-sort="added">Ajouté</th>
           <th data-sort="region">Region</th>
           <th data-sort="city">City</th>
           <th>Contacts</th>
@@ -33,12 +40,13 @@
       </thead>
       <tbody>
         {% for e in events %}
-        <tr data-name="{{ (e.name or e.event_url)|lower }}" data-date="{{ e.event_date or '' }}" data-region="{{ e.region or '' }}" data-city="{{ e.city or '' }}" data-score="{{ e.score or 0 }}">
+        <tr data-name="{{ (e.name or e.event_url)|lower }}" data-date="{{ e.event_date or '' }}" data-added="{{ e.added_at or '' }}" data-region="{{ e.region or '' }}" data-city="{{ e.city or '' }}" data-score="{{ e.score or 0 }}">
           <td>
             <a href="/event/{{ e.id }}">{{ e.name or e.event_url }}</a>
             {% if e.subtitle %}<div class="cell-sub">{{ e.subtitle }}</div>{% endif %}
           </td>
           <td>{{ e.event_date or '—' }}</td>
+          <td><span class="badge">{{ e.added_ago }}</span></td>
           <td>{{ e.region }}</td>
           <td>{{ e.city or '—' }}</td>
           <td>
@@ -56,5 +64,14 @@
 {% endblock %}
 {% block extra_scripts %}
 <script src="{{ url_for('static', filename='table.js') }}"></script>
-<script>initDataTable('events-table','events-search','events-region','events-reset');</script>
+<script>
+initDataTable('events-table', {
+  searchId: 'events-search',
+  resetId: 'events-reset',
+  filters: [
+    { id: 'events-region', dataset: 'region' },
+    { id: 'events-city', dataset: 'city' }
+  ]
+});
+</script>
 {% endblock %}

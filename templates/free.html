@@ -5,7 +5,7 @@
   <div>
     <div class="eyebrow">Monitoring</div>
     <h1>Free products</h1>
-    <p>Liste des produits gratuits avec la date de leur événement, filtre et tri rapides.</p>
+    <p>Uniquement les produits à 0€, avec date d’événement, date d’ajout et filtres avancés.</p>
   </div>
 </section>
 <section class="panel">
@@ -17,18 +17,25 @@
       <option value="{{ r }}">{{ r|capitalize }}</option>
       {% endfor %}
     </select>
+    <select id="free-status" class="toolbar-select">
+      <option value="">Tous les statuts</option>
+      <option value="available">Available</option>
+      <option value="unavailable">Unavailable</option>
+      <option value="unknown">Unknown</option>
+    </select>
     <button id="free-reset" class="btn btn-secondary" type="button">Reset</button>
   </div>
   <div class="table-wrap">
     <table class="table" id="free-table">
       <thead>
-        <tr><th data-sort="event">Event</th><th data-sort="date">Date</th><th data-sort="region">Region</th><th data-sort="product">Product</th><th data-sort="price" data-type="number">Price</th><th data-sort="status">Status</th><th>Open</th></tr>
+        <tr><th data-sort="event">Event</th><th data-sort="date">Date event</th><th data-sort="added">Ajouté</th><th data-sort="region">Region</th><th data-sort="product">Product</th><th data-sort="price" data-type="number">Price</th><th data-sort="status">Status</th><th>Open</th></tr>
       </thead>
       <tbody>
         {% for r in rows %}
-        <tr data-event="{{ (r.event_name or r.event_url)|lower }}" data-date="{{ r.event_date or '' }}" data-region="{{ r.region or '' }}" data-product="{{ r.product_name|lower }}" data-price="{{ r.numeric_price or 0 }}" data-status="{{ r.is_available }}">
+        <tr data-event="{{ (r.event_name or r.event_url)|lower }}" data-date="{{ r.event_date or '' }}" data-added="{{ r.added_at or '' }}" data-region="{{ r.region or '' }}" data-product="{{ r.product_name|lower }}" data-price="{{ r.numeric_price or 0 }}" data-status="{{ 'available' if r.is_available in (1, true) else 'unavailable' if r.is_available in (0, false) else 'unknown' }}">
           <td><a href="/event/{{ r.event_id }}">{{ r.event_name or r.event_url }}</a></td>
           <td>{{ r.event_date or '—' }}</td>
+          <td><span class="badge">{{ r.added_ago }}</span></td>
           <td>{{ r.region }}</td>
           <td>{{ r.product_name }}</td>
           <td>{{ r.price_text }}</td>
@@ -43,5 +50,14 @@
 {% endblock %}
 {% block extra_scripts %}
 <script src="{{ url_for('static', filename='table.js') }}"></script>
-<script>initDataTable('free-table','free-search','free-region','free-reset');</script>
+<script>
+initDataTable('free-table', {
+  searchId: 'free-search',
+  resetId: 'free-reset',
+  filters: [
+    { id: 'free-region', dataset: 'region' },
+    { id: 'free-status', dataset: 'status' }
+  ]
+});
+</script>
 {% endblock %}

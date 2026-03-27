@@ -6,6 +6,8 @@ CONFIG_PATH = Path("data/config.json")
 DEFAULT_CONFIG = {
     "max_workers": 6,
     "request_timeout": 45,
+    "region_scan_frequency_minutes": 60,
+    "free_product_refresh_frequency_hours": 24,
     "user_agent": "Mozilla/5.0",
     "regions": {
         "london": {"enabled": True, "url": "https://www.bizouk.com/?region=london"},
@@ -20,7 +22,13 @@ def _merge_defaults(data: dict) -> dict:
     merged = json.loads(json.dumps(DEFAULT_CONFIG))
     if not isinstance(data, dict):
         return merged
-    for key in ("max_workers", "request_timeout", "user_agent"):
+    for key in (
+        "max_workers",
+        "request_timeout",
+        "region_scan_frequency_minutes",
+        "free_product_refresh_frequency_hours",
+        "user_agent",
+    ):
         if key in data:
             merged[key] = data[key]
     if isinstance(data.get("regions"), dict):
@@ -59,6 +67,14 @@ def save_config(data: dict) -> dict:
         merged["request_timeout"] = max(5, min(180, int(merged.get("request_timeout", 45))))
     except Exception:
         merged["request_timeout"] = 45
+    try:
+        merged["region_scan_frequency_minutes"] = max(5, min(10080, int(merged.get("region_scan_frequency_minutes", 60))))
+    except Exception:
+        merged["region_scan_frequency_minutes"] = 60
+    try:
+        merged["free_product_refresh_frequency_hours"] = max(1, min(720, int(merged.get("free_product_refresh_frequency_hours", 24))))
+    except Exception:
+        merged["free_product_refresh_frequency_hours"] = 24
     merged["user_agent"] = str(merged.get("user_agent") or "Mozilla/5.0").strip() or "Mozilla/5.0"
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -1,21 +1,33 @@
-function initDataTable(tableId, searchId, regionId, resetId) {
+function initDataTable(tableId, config = {}) {
   const table = document.getElementById(tableId);
   if (!table) return;
   const tbody = table.querySelector('tbody');
   const rows = Array.from(tbody.querySelectorAll('tr'));
-  const search = searchId ? document.getElementById(searchId) : null;
-  const region = regionId ? document.getElementById(regionId) : null;
-  const reset = resetId ? document.getElementById(resetId) : null;
+  const search = config.searchId ? document.getElementById(config.searchId) : null;
+  const reset = config.resetId ? document.getElementById(config.resetId) : null;
+  const filters = (config.filters || []).map((item) => ({
+    el: document.getElementById(item.id),
+    dataset: item.dataset,
+    mode: item.mode || 'exact'
+  })).filter((item) => item.el);
 
   function applyFilters() {
     const q = (search?.value || '').toLowerCase().trim();
-    const regionValue = (region?.value || '').toLowerCase().trim();
     rows.forEach((row) => {
       const text = row.innerText.toLowerCase();
-      const rowRegion = (row.dataset.region || '').toLowerCase();
       const okSearch = !q || text.includes(q);
-      const okRegion = !regionValue || rowRegion === regionValue;
-      row.style.display = okSearch && okRegion ? '' : 'none';
+      let okFilters = true;
+      for (const filter of filters) {
+        const wanted = String(filter.el.value || '').toLowerCase().trim();
+        if (!wanted) continue;
+        const actual = String(row.dataset[filter.dataset] || '').toLowerCase().trim();
+        if (filter.mode === 'includes') {
+          if (!actual.includes(wanted)) okFilters = false;
+        } else {
+          if (actual !== wanted) okFilters = false;
+        }
+      }
+      row.style.display = okSearch && okFilters ? '' : 'none';
     });
   }
 
@@ -47,10 +59,10 @@ function initDataTable(tableId, searchId, regionId, resetId) {
   });
 
   search?.addEventListener('input', applyFilters);
-  region?.addEventListener('change', applyFilters);
+  filters.forEach((filter) => filter.el.addEventListener('change', applyFilters));
   reset?.addEventListener('click', () => {
     if (search) search.value = '';
-    if (region) region.value = '';
+    filters.forEach((filter) => { filter.el.value = ''; });
     applyFilters();
   });
 

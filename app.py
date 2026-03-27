@@ -100,7 +100,7 @@ def parse_dt(value):
     if not value:
         return None
     try:
-        return datetime.fromisoformat(str(value))
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except Exception:
         return None
 
@@ -109,7 +109,31 @@ def is_recent(value, hours=24):
     dt = parse_dt(value)
     if not dt:
         return False
-    return datetime.utcnow() - dt <= timedelta(hours=hours)
+    return datetime.utcnow() - dt.replace(tzinfo=None) <= timedelta(hours=hours)
+
+
+def time_ago(value):
+    dt = parse_dt(value)
+    if not dt:
+        return "—"
+    delta = datetime.utcnow() - dt.replace(tzinfo=None)
+    seconds = int(max(delta.total_seconds(), 0))
+    if seconds < 60:
+        return "à l’instant"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"il y a {minutes} min"
+    hours = minutes // 60
+    if hours < 24:
+        return f"il y a {hours} h"
+    days = hours // 24
+    if days < 30:
+        return f"il y a {days} jour{'s' if days > 1 else ''}"
+    months = days // 30
+    if months < 12:
+        return f"il y a {months} mois"
+    years = days // 365
+    return f"il y a {years} an{'s' if years > 1 else ''}"
 
 
 def has_column(table, column):
@@ -119,13 +143,20 @@ def has_column(table, column):
     return column in cols
 
 
+def decorate_rows(rows):
+    for row in rows:
+        row["added_at"] = row.get("first_seen_at") or row.get("event_first_seen")
+        row["added_ago"] = time_ago(row.get("added_at"))
+    return rows
+
+
 def stats():
     c = conn()
     cur = c.cursor()
     out = {
         "events": cur.execute("SELECT COUNT(*) FROM events").fetchone()[0],
-        "free_products": cur.execute("SELECT COUNT(*) FROM products WHERE is_free = 1").fetchone()[0],
-        "free_available": cur.execute("SELECT COUNT(*) FROM products WHERE is_free = 1 AND is_available = 1").fetchone()[0],
+        "free_products": cur.execute("SELECT COUNT(*) FROM products WHERE COALESCE(numeric_price, -1) = 0 AND is_free = 1").fetchone()[0],
+        "free_available": cur.execute("SELECT COUNT(*) FROM products WHERE COALESCE(numeric_price, -1) = 0 AND is_free = 1 AND is_available = 1").fetchone()[0],
         "last_seen_at": cur.execute("SELECT MAX(last_seen_at) FROM events").fetchone()[0],
     }
     c.close()
@@ -134,7 +165,7 @@ def stats():
 
 def list_events(limit=None):
     c = conn()
-    select_cols = "id, event_url, region, name, subtitle, event_date, city, address, contact_phone, contact_email, score"
+    select_cols = "id, event_url, region, name, subtitle, event_date, city, address, contact_phone, contact_email, first_seen_at, score"
     if has_column("events", "contact_website"):
         select_cols += ", contact_website"
     if has_column("events", "event_image"):
@@ -144,7 +175,7 @@ def list_events(limit=None):
         sql += f" LIMIT {int(limit)}"
     rows = [dict(r) for r in c.execute(sql).fetchall()]
     c.close()
-    return rows
+    return decorate_rows(rows)
 
 
 def list_free(limit=None):
@@ -152,12 +183,12 @@ def list_free(limit=None):
     select_cols = "p.*, e.name AS event_name, e.subtitle AS event_subtitle, e.event_date AS event_date, e.region, e.event_url, e.first_seen_at AS event_first_seen, e.score, e.id AS event_id"
     if has_column("events", "event_image"):
         select_cols += ", e.event_image AS event_image"
-    sql = f"SELECT {select_cols} FROM products p JOIN events e ON e.id = p.event_id WHERE p.is_free = 1 ORDER BY p.last_seen_at DESC"
+    sql = f"SELECT {select_cols} FROM products p JOIN events e ON e.id = p.event_id WHERE p.is_free = 1 AND COALESCE(p.numeric_price, -1) = 0 ORDER BY p.last_seen_at DESC"
     if limit:
         sql += f" LIMIT {int(limit)}"
     rows = [dict(r) for r in c.execute(sql).fetchall()]
     c.close()
-    return rows
+    return decorate_rows(rows)
 
 
 def list_opportunities(limit=None):
@@ -178,6 +209,8 @@ def get_event(event_id):
         c.close()
         return None
     out = dict(event)
+    out["added_at"] = out.get("first_seen_at")
+    out["added_ago"] = time_ago(out.get("first_seen_at"))
     out["products"] = [dict(r) for r in c.execute("SELECT * FROM products WHERE event_id=? ORDER BY last_seen_at DESC", (event_id,)).fetchall()]
     c.close()
     return out
@@ -241,6 +274,8 @@ def config_page():
         new_config = {
             "max_workers": request.form.get("max_workers", current["max_workers"]),
             "request_timeout": request.form.get("request_timeout", current["request_timeout"]),
+            "region_scan_frequency_minutes": request.form.get("region_scan_frequency_minutes", current.get("region_scan_frequency_minutes", 60)),
+            "free_product_refresh_frequency_hours": request.form.get("free_product_refresh_frequency_hours", current.get("free_product_refresh_frequency_hours", 24)),
             "user_agent": request.form.get("user_agent", current["user_agent"]),
             "regions": regions,
         }

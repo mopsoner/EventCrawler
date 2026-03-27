@@ -13,7 +13,8 @@
   <section class="panel">
     <div class="detail-meta-grid">
       <div><span class="meta-label">Region</span><div>{{ event.region or '—' }}</div></div>
-      <div><span class="meta-label">Date</span><div>{{ event.event_date or '—' }}</div></div>
+      <div><span class="meta-label">Date event</span><div>{{ event.event_date or '—' }}</div></div>
+      <div><span class="meta-label">Ajouté</span><div>{{ event.added_ago }}</div></div>
       <div><span class="meta-label">City</span><div>{{ event.city or '—' }}</div></div>
       <div><span class="meta-label">Address</span><div>{{ event.address or '—' }}</div></div>
       <div><span class="meta-label">Phone</span><div>{{ event.contact_phone or '—' }}</div></div>

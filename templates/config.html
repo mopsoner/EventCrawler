@@ -5,7 +5,7 @@
   <div>
     <div class="eyebrow">Settings</div>
     <h1>Configuration</h1>
-    <p>Ajuste les régions, le nombre de workers et le timeout depuis une interface plus propre.</p>
+    <p>Règle le crawler, les fréquences de boucle et les régions depuis la même page.</p>
   </div>
 </section>
 <section class="panel panel-form">
@@ -19,6 +19,16 @@
       <label class="field">
         <span>Request timeout (seconds)</span>
         <input type="number" name="request_timeout" min="5" max="180" value="{{ config.request_timeout }}">
+      </label>
+      <label class="field">
+        <span>Scan pages régions</span>
+        <input type="number" name="region_scan_frequency_minutes" min="5" max="10080" value="{{ config.region_scan_frequency_minutes }}">
+        <small class="field-help">Fréquence de la boucle qui parcourt les pages régions pour détecter les nouveaux événements.</small>
+      </label>
+      <label class="field">
+        <span>Refresh produits gratuits</span>
+        <input type="number" name="free_product_refresh_frequency_hours" min="1" max="720" value="{{ config.free_product_refresh_frequency_hours }}">
+        <small class="field-help">Fréquence de la boucle qui revisite les événements pour mettre à jour l’état des produits gratuits.</small>
       </label>
     </div>
     <label class="field">
