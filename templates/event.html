@@ -7,7 +7,7 @@
   <section class="panel">
     <div class="detail-meta-grid">
       <div><span class="meta-label">Region</span><div>{{ event.region or '—' }}</div></div>
-      <div><span class="meta-label">Date event</span><div>{{ event.event_date or '—' }}</div></div>
+      <div><span class="meta-label">Date event</span><div><span id="event-date-text">{{ event.event_date or '—' }}</span> <span id="event-period-badge"></span></div></div>
       <div><span class="meta-label">Ajouté</span><div>{{ event.added_ago }}</div></div>
       <div><span class="meta-label">Score</span><div>{{ event.score }}</div></div>
       <div><span class="meta-label">City</span><div>{{ event.city or '—' }}</div></div>
@@ -37,4 +37,46 @@
 <section class="panel"><div class="panel-header"><div><h2>Products</h2><p>Billets détectés pour cet événement.</p></div></div><div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Price</th><th>Free</th><th>Available</th></tr></thead><tbody>{% for p in event.products %}<tr><td>{{ p.product_name }}</td><td>{{ p.price_text }}</td><td>{% if p.is_free %}<span class="badge badge-success">Free</span>{% else %}<span class="badge">Paid</span>{% endif %}</td><td>{% if p.is_available in (1, true) %}<span class="badge badge-info">Available</span>{% elif p.is_available in (0, false) %}<span class="badge badge-danger">Unavailable</span>{% else %}<span class="badge">Unknown</span>{% endif %}</td></tr>{% endfor %}</tbody></table></div></section>
 <section class="panel"><div class="panel-header"><div><h2>Product history</h2><p>Timeline des changements observés sur les produits.</p></div></div><div class="table-wrap"><table class="table"><thead><tr><th>Product</th><th>Change</th><th>Old</th><th>New</th><th>When</th></tr></thead><tbody>{% for h in event.history %}<tr><td>{{ h.product_name }}</td><td>{{ h.change_type }}</td><td>{% if h.old_price is not none %}{{ h.old_price }}€{% else %}—{% endif %}</td><td>{% if h.new_price is not none %}{{ h.new_price }}€{% else %}—{% endif %}</td><td>{{ h.observed_ago }}</td></tr>{% endfor %}</tbody></table></div></section>
 {% else %}<section class="panel"><div class="empty-state">Event not found.</div></section>{% endif %}
+{% endblock %}
+{% block extra_scripts %}
+<script>
+function parseLooseDate(text) {
+  if (!text || text === '—') return null;
+  const raw = text.toLowerCase();
+  const months = {january:0,february:1,march:2,april:3,may:4,june:5,july:6,august:7,september:8,october:9,november:10,december:11,janvier:0,fevrier:1,février:1,mars:2,avril:3,mai:4,juin:5,juillet:6,aout:7,août:7,septembre:8,octobre:9,novembre:10,decembre:11,décembre:11};
+  const m = raw.match(/(\d{1,2}).*?(january|february|march|april|may|june|july|august|september|october|november|december|janvier|fevrier|février|mars|avril|mai|juin|juillet|aout|août|septembre|octobre|novembre|decembre|décembre).*?(20\d{2})/i)
+        || raw.match(/(january|february|march|april|may|june|july|august|september|october|november|december|janvier|fevrier|février|mars|avril|mai|juin|juillet|aout|août|septembre|octobre|novembre|decembre|décembre)\s+(\d{1,2}).*?(20\d{2})/i);
+  if (!m) return null;
+  let day, monthName, year;
+  if (/^\d/.test(m[1])) { day = parseInt(m[1], 10); monthName = m[2]; year = parseInt(m[3], 10); }
+  else { monthName = m[1]; day = parseInt(m[2], 10); year = parseInt(m[3], 10); }
+  const month = months[monthName];
+  if (month === undefined) return null;
+  return new Date(year, month, day);
+}
+function periodForDate(dt) {
+  if (!dt) return 'Date unknown';
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const eventDay = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+  const diffDays = Math.round((eventDay - today) / 86400000);
+  const day = today.getDay();
+  const mondayOffset = day === 0 ? -6 : 1 - day;
+  const startThisWeek = new Date(today); startThisWeek.setDate(today.getDate() + mondayOffset);
+  const endThisWeek = new Date(startThisWeek); endThisWeek.setDate(startThisWeek.getDate() + 6);
+  const startNextWeek = new Date(startThisWeek); startNextWeek.setDate(startThisWeek.getDate() + 7);
+  const endNextWeek = new Date(startNextWeek); endNextWeek.setDate(startNextWeek.getDate() + 6);
+  if (diffDays < 0) return 'Past';
+  if (diffDays === 0) return 'Today';
+  if (eventDay >= startThisWeek && eventDay <= endThisWeek) return 'This week';
+  if (eventDay >= startNextWeek && eventDay <= endNextWeek) return 'Next week';
+  return 'Upcoming';
+}
+const dateText = document.getElementById('event-date-text');
+const badge = document.getElementById('event-period-badge');
+if (dateText && badge) {
+  const label = periodForDate(parseLooseDate(dateText.textContent.trim()));
+  badge.innerHTML = '<span class="badge">' + label + '</span>';
+}
+</script>
 {% endblock %}

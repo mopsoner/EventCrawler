@@ -23,6 +23,15 @@
       <option value="{{ c }}">{{ c }}</option>
       {% endfor %}
     </select>
+    <select id="events-period" class="toolbar-select">
+      <option value="">Toutes les périodes</option>
+      <option value="today">Today</option>
+      <option value="this_week">This week</option>
+      <option value="next_week">Next week</option>
+      <option value="this_month">This month</option>
+      <option value="past">Past</option>
+      <option value="unknown">Date unknown</option>
+    </select>
     <button id="events-reset" class="btn btn-secondary" type="button">Reset</button>
   </div>
   <div class="table-wrap">
@@ -44,6 +53,7 @@
           <td>
             <a href="/event/{{ e.id }}">{{ e.name or e.event_url }}</a>
             {% if e.subtitle %}<div class="cell-sub">{{ e.subtitle }}</div>{% endif %}
+            {% if e.event_period_label %}<div class="cell-sub"><span class="badge">{{ e.event_period_label }}</span></div>{% endif %}
           </td>
           <td>{{ e.event_date or '—' }}</td>
           <td><span class="badge">{{ e.added_ago }}</span></td>
@@ -73,5 +83,73 @@ initDataTable('events-table', {
     { id: 'events-city', dataset: 'city' }
   ]
 });
+
+function parseLooseDate(text) {
+  if (!text) return null;
+  const raw = text.toLowerCase();
+  const months = {
+    january:0,february:1,march:2,april:3,may:4,june:5,july:6,august:7,september:8,october:9,november:10,december:11,
+    janvier:0,fevrier:1,février:1,mars:2,avril:3,mai:4,juin:5,juillet:6,aout:7,août:7,septembre:8,octobre:9,novembre:10,decembre:11,décembre:11
+  };
+  const m = raw.match(/(\d{1,2}).*?(january|february|march|april|may|june|july|august|september|october|november|december|janvier|fevrier|février|mars|avril|mai|juin|juillet|aout|août|septembre|octobre|novembre|decembre|décembre).*?(20\d{2})/i)
+        || raw.match(/(january|february|march|april|may|june|july|august|september|october|november|december|janvier|fevrier|février|mars|avril|mai|juin|juillet|aout|août|septembre|octobre|novembre|decembre|décembre)\s+(\d{1,2}).*?(20\d{2})/i);
+  if (!m) return null;
+  let day, monthName, year;
+  if (/^\d/.test(m[1])) {
+    day = parseInt(m[1], 10); monthName = m[2]; year = parseInt(m[3], 10);
+  } else {
+    monthName = m[1]; day = parseInt(m[2], 10); year = parseInt(m[3], 10);
+  }
+  const month = months[monthName];
+  if (month === undefined) return null;
+  return new Date(year, month, day);
+}
+
+function periodForDate(dt) {
+  if (!dt) return 'unknown';
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const eventDay = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+  const diffDays = Math.round((eventDay - today) / 86400000);
+  const day = today.getDay();
+  const mondayOffset = day === 0 ? -6 : 1 - day;
+  const startThisWeek = new Date(today); startThisWeek.setDate(today.getDate() + mondayOffset);
+  const endThisWeek = new Date(startThisWeek); endThisWeek.setDate(startThisWeek.getDate() + 6);
+  const startNextWeek = new Date(startThisWeek); startNextWeek.setDate(startThisWeek.getDate() + 7);
+  const endNextWeek = new Date(startNextWeek); endNextWeek.setDate(startNextWeek.getDate() + 6);
+  const endThisMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+  if (diffDays < 0) return 'past';
+  if (diffDays === 0) return 'today';
+  if (eventDay >= startThisWeek && eventDay <= endThisWeek) return 'this_week';
+  if (eventDay >= startNextWeek && eventDay <= endNextWeek) return 'next_week';
+  if (eventDay <= endThisMonth) return 'this_month';
+  return 'future';
+}
+
+(function applyPeriodFilter() {
+  const select = document.getElementById('events-period');
+  const rows = Array.from(document.querySelectorAll('#events-table tbody tr'));
+  function refresh() {
+    const wanted = select.value;
+    rows.forEach(row => {
+      const baseHidden = row.dataset.baseHidden === '1';
+      const dt = parseLooseDate(row.dataset.date || '');
+      const period = periodForDate(dt);
+      row.dataset.period = period;
+      const matches = !wanted || period === wanted;
+      row.style.display = (!baseHidden && matches) ? '' : 'none';
+    });
+  }
+  const observer = new MutationObserver(() => {
+    rows.forEach(row => { row.dataset.baseHidden = row.style.display === 'none' ? '1' : '0'; });
+    refresh();
+  });
+  const tbody = document.querySelector('#events-table tbody');
+  if (tbody) observer.observe(tbody, { attributes: true, subtree: true, attributeFilter: ['style'] });
+  rows.forEach(row => { row.dataset.baseHidden = '0'; });
+  select.addEventListener('change', refresh);
+  document.getElementById('events-reset').addEventListener('click', () => setTimeout(refresh, 0));
+  refresh();
+})();
 </script>
 {% endblock %}
