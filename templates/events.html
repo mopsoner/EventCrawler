@@ -49,11 +49,11 @@
       </thead>
       <tbody>
         {% for e in events %}
-        <tr data-name="{{ (e.name or e.event_url)|lower }}" data-date="{{ e.event_date or '' }}" data-added="{{ e.added_at or '' }}" data-region="{{ e.region or '' }}" data-city="{{ e.city or '' }}" data-score="{{ e.score or 0 }}">
+        <tr data-name="{{ (e.name or e.event_url)|lower }}" data-date="{{ e.event_date or '' }}" data-added="{{ e.added_at or '' }}" data-region="{{ e.region or '' }}" data-city="{{ e.city or '' }}" data-score="{{ e.score or 0 }}" data-period="unknown">
           <td>
             <a href="/event/{{ e.id }}">{{ e.name or e.event_url }}</a>
             {% if e.subtitle %}<div class="cell-sub">{{ e.subtitle }}</div>{% endif %}
-            {% if e.event_period_label %}<div class="cell-sub"><span class="badge">{{ e.event_period_label }}</span></div>{% endif %}
+            <div class="cell-sub"><span class="badge js-period-badge" style="display:none"></span></div>
           </td>
           <td>{{ e.event_date or '—' }}</td>
           <td><span class="badge">{{ e.added_ago }}</span></td>
@@ -75,15 +75,6 @@
 {% block extra_scripts %}
 <script src="{{ url_for('static', filename='table.js') }}"></script>
 <script>
-initDataTable('events-table', {
-  searchId: 'events-search',
-  resetId: 'events-reset',
-  filters: [
-    { id: 'events-region', dataset: 'region' },
-    { id: 'events-city', dataset: 'city' }
-  ]
-});
-
 function parseLooseDate(text) {
   if (!text) return null;
   const raw = text.toLowerCase();
@@ -106,7 +97,7 @@ function parseLooseDate(text) {
 }
 
 function periodForDate(dt) {
-  if (!dt) return 'unknown';
+  if (!dt) return { key: 'unknown', label: 'Date unknown' };
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const eventDay = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
@@ -118,38 +109,32 @@ function periodForDate(dt) {
   const startNextWeek = new Date(startThisWeek); startNextWeek.setDate(startThisWeek.getDate() + 7);
   const endNextWeek = new Date(startNextWeek); endNextWeek.setDate(startNextWeek.getDate() + 6);
   const endThisMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-  if (diffDays < 0) return 'past';
-  if (diffDays === 0) return 'today';
-  if (eventDay >= startThisWeek && eventDay <= endThisWeek) return 'this_week';
-  if (eventDay >= startNextWeek && eventDay <= endNextWeek) return 'next_week';
-  if (eventDay <= endThisMonth) return 'this_month';
-  return 'future';
+  if (diffDays < 0) return { key: 'past', label: 'Past' };
+  if (diffDays === 0) return { key: 'today', label: 'Today' };
+  if (eventDay >= startThisWeek && eventDay <= endThisWeek) return { key: 'this_week', label: 'This week' };
+  if (eventDay >= startNextWeek && eventDay <= endNextWeek) return { key: 'next_week', label: 'Next week' };
+  if (eventDay <= endThisMonth) return { key: 'this_month', label: 'This month' };
+  return { key: 'future', label: 'Upcoming' };
 }
 
-(function applyPeriodFilter() {
-  const select = document.getElementById('events-period');
-  const rows = Array.from(document.querySelectorAll('#events-table tbody tr'));
-  function refresh() {
-    const wanted = select.value;
-    rows.forEach(row => {
-      const baseHidden = row.dataset.baseHidden === '1';
-      const dt = parseLooseDate(row.dataset.date || '');
-      const period = periodForDate(dt);
-      row.dataset.period = period;
-      const matches = !wanted || period === wanted;
-      row.style.display = (!baseHidden && matches) ? '' : 'none';
-    });
+document.querySelectorAll('#events-table tbody tr').forEach((row) => {
+  const info = periodForDate(parseLooseDate(row.dataset.date || ''));
+  row.dataset.period = info.key;
+  const badge = row.querySelector('.js-period-badge');
+  if (badge) {
+    badge.textContent = info.label;
+    badge.style.display = '';
   }
-  const observer = new MutationObserver(() => {
-    rows.forEach(row => { row.dataset.baseHidden = row.style.display === 'none' ? '1' : '0'; });
-    refresh();
-  });
-  const tbody = document.querySelector('#events-table tbody');
-  if (tbody) observer.observe(tbody, { attributes: true, subtree: true, attributeFilter: ['style'] });
-  rows.forEach(row => { row.dataset.baseHidden = '0'; });
-  select.addEventListener('change', refresh);
-  document.getElementById('events-reset').addEventListener('click', () => setTimeout(refresh, 0));
-  refresh();
-})();
+});
+
+initDataTable('events-table', {
+  searchId: 'events-search',
+  resetId: 'events-reset',
+  filters: [
+    { id: 'events-region', dataset: 'region' },
+    { id: 'events-city', dataset: 'city' },
+    { id: 'events-period', dataset: 'period' }
+  ]
+});
 </script>
 {% endblock %}
