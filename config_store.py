@@ -24,9 +24,36 @@ def slugify_region_name(name: str) -> str:
     return value.strip("_")
 
 
+def _normalized_regions(regions_data: dict, fallback_to_defaults: bool) -> dict:
+    source = regions_data if isinstance(regions_data, dict) else (DEFAULT_CONFIG["regions"] if fallback_to_defaults else {})
+    clean_regions = {}
+    for raw_name, region in source.items():
+        if not isinstance(region, dict):
+            continue
+        name = slugify_region_name(raw_name)
+        if not name:
+            continue
+        url = str(region.get("url") or "").strip()
+        if not url:
+            continue
+        clean_regions[name] = {
+            "enabled": bool(region.get("enabled")),
+            "url": url,
+        }
+    return clean_regions
+
+
 def _merge_defaults(data: dict) -> dict:
-    merged = json.loads(json.dumps(DEFAULT_CONFIG))
+    merged = {
+        "max_workers": DEFAULT_CONFIG["max_workers"],
+        "request_timeout": DEFAULT_CONFIG["request_timeout"],
+        "region_scan_frequency_minutes": DEFAULT_CONFIG["region_scan_frequency_minutes"],
+        "free_product_refresh_frequency_hours": DEFAULT_CONFIG["free_product_refresh_frequency_hours"],
+        "user_agent": DEFAULT_CONFIG["user_agent"],
+        "regions": {},
+    }
     if not isinstance(data, dict):
+        merged["regions"] = _normalized_regions({}, True)
         return merged
     for key in (
         "max_workers",
@@ -37,19 +64,8 @@ def _merge_defaults(data: dict) -> dict:
     ):
         if key in data:
             merged[key] = data[key]
-    incoming_regions = data.get("regions") if isinstance(data.get("regions"), dict) else {}
-    for raw_name, incoming in incoming_regions.items():
-        if not isinstance(incoming, dict):
-            continue
-        name = slugify_region_name(raw_name)
-        if not name:
-            continue
-        if name not in merged["regions"]:
-            merged["regions"][name] = {"enabled": False, "url": ""}
-        if "enabled" in incoming:
-            merged["regions"][name]["enabled"] = bool(incoming["enabled"])
-        if "url" in incoming:
-            merged["regions"][name]["url"] = str(incoming.get("url") or "").strip()
+    has_regions_key = "regions" in data
+    merged["regions"] = _normalized_regions(data.get("regions"), fallback_to_defaults=not has_regions_key)
     return merged
 
 
@@ -87,21 +103,7 @@ def save_config(data: dict) -> dict:
     except Exception:
         merged["free_product_refresh_frequency_hours"] = 24
     merged["user_agent"] = str(merged.get("user_agent") or "Mozilla/5.0").strip() or "Mozilla/5.0"
-
-    clean_regions = {}
-    for raw_name, region in (merged.get("regions") or {}).items():
-        name = slugify_region_name(raw_name)
-        if not name or not isinstance(region, dict):
-            continue
-        url = str(region.get("url") or "").strip()
-        if not url:
-            continue
-        clean_regions[name] = {
-            "enabled": bool(region.get("enabled")),
-            "url": url,
-        }
-    merged["regions"] = clean_regions
-
+    merged["regions"] = _normalized_regions(merged.get("regions"), fallback_to_defaults=False)
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
     return merged
