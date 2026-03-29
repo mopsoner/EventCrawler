@@ -23,6 +23,15 @@
       <option value="unavailable">Unavailable</option>
       <option value="unknown">Unknown</option>
     </select>
+    <select id="free-period" class="toolbar-select">
+      <option value="">Toutes les périodes</option>
+      <option value="today">Today</option>
+      <option value="this_week">This week</option>
+      <option value="next_week">Next week</option>
+      <option value="this_month">This month</option>
+      <option value="past">Past</option>
+      <option value="unknown">Date unknown</option>
+    </select>
     <button id="free-reset" class="btn btn-secondary" type="button">Reset</button>
   </div>
   <div class="table-wrap">
@@ -32,8 +41,11 @@
       </thead>
       <tbody>
         {% for r in rows %}
-        <tr data-event="{{ (r.event_name or r.event_url)|lower }}" data-date="{{ r.event_date or '' }}" data-added="{{ r.added_at or '' }}" data-region="{{ r.region or '' }}" data-product="{{ r.product_name|lower }}" data-price="{{ r.numeric_price or 0 }}" data-status="{{ 'available' if r.is_available in (1, true) else 'unavailable' if r.is_available in (0, false) else 'unknown' }}">
-          <td><a href="/event/{{ r.event_id }}">{{ r.event_name or r.event_url }}</a></td>
+        <tr data-event="{{ (r.event_name or r.event_url)|lower }}" data-date="{{ r.event_date or '' }}" data-added="{{ r.added_at or '' }}" data-region="{{ r.region or '' }}" data-product="{{ r.product_name|lower }}" data-price="{{ r.numeric_price or 0 }}" data-status="{{ 'available' if r.is_available in (1, true) else 'unavailable' if r.is_available in (0, false) else 'unknown' }}" data-period="unknown">
+          <td>
+            <a href="/event/{{ r.event_id }}">{{ r.event_name or r.event_url }}</a>
+            <div class="cell-sub"><span class="badge js-period-badge" style="display:none"></span></div>
+          </td>
           <td>{{ r.event_date or '—' }}</td>
           <td><span class="badge">{{ r.added_ago }}</span></td>
           <td>{{ r.region }}</td>
@@ -59,12 +71,65 @@
 {% block extra_scripts %}
 <script src="{{ url_for('static', filename='table.js') }}"></script>
 <script>
+function parseLooseDate(text) {
+  if (!text) return null;
+  const raw = text.toLowerCase();
+  const months = {
+    january:0,february:1,march:2,april:3,may:4,june:5,july:6,august:7,september:8,october:9,november:10,december:11,
+    janvier:0,fevrier:1,février:1,mars:2,avril:3,mai:4,juin:5,juillet:6,aout:7,août:7,septembre:8,octobre:9,novembre:10,decembre:11,décembre:11
+  };
+  const m = raw.match(/(\d{1,2}).*?(january|february|march|april|may|june|july|august|september|october|november|december|janvier|fevrier|février|mars|avril|mai|juin|juillet|aout|août|septembre|octobre|novembre|decembre|décembre).*?(20\d{2})/i)
+        || raw.match(/(january|february|march|april|may|june|july|august|september|october|november|december|janvier|fevrier|février|mars|avril|mai|juin|juillet|aout|août|septembre|octobre|novembre|decembre|décembre)\s+(\d{1,2}).*?(20\d{2})/i);
+  if (!m) return null;
+  let day, monthName, year;
+  if (/^\d/.test(m[1])) {
+    day = parseInt(m[1], 10); monthName = m[2]; year = parseInt(m[3], 10);
+  } else {
+    monthName = m[1]; day = parseInt(m[2], 10); year = parseInt(m[3], 10);
+  }
+  const month = months[monthName];
+  if (month === undefined) return null;
+  return new Date(year, month, day);
+}
+
+function periodForDate(dt) {
+  if (!dt) return { key: 'unknown', label: 'Date unknown' };
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const eventDay = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+  const diffDays = Math.round((eventDay - today) / 86400000);
+  const day = today.getDay();
+  const mondayOffset = day === 0 ? -6 : 1 - day;
+  const startThisWeek = new Date(today); startThisWeek.setDate(today.getDate() + mondayOffset);
+  const endThisWeek = new Date(startThisWeek); endThisWeek.setDate(startThisWeek.getDate() + 6);
+  const startNextWeek = new Date(startThisWeek); startNextWeek.setDate(startThisWeek.getDate() + 7);
+  const endNextWeek = new Date(startNextWeek); endNextWeek.setDate(startNextWeek.getDate() + 6);
+  const endThisMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+  if (diffDays < 0) return { key: 'past', label: 'Past' };
+  if (diffDays === 0) return { key: 'today', label: 'Today' };
+  if (eventDay >= startThisWeek && eventDay <= endThisWeek) return { key: 'this_week', label: 'This week' };
+  if (eventDay >= startNextWeek && eventDay <= endNextWeek) return { key: 'next_week', label: 'Next week' };
+  if (eventDay <= endThisMonth) return { key: 'this_month', label: 'This month' };
+  return { key: 'future', label: 'Upcoming' };
+}
+
+document.querySelectorAll('#free-table tbody tr').forEach((row) => {
+  const info = periodForDate(parseLooseDate(row.dataset.date || ''));
+  row.dataset.period = info.key;
+  const badge = row.querySelector('.js-period-badge');
+  if (badge) {
+    badge.textContent = info.label;
+    badge.style.display = '';
+  }
+});
+
 initDataTable('free-table', {
   searchId: 'free-search',
   resetId: 'free-reset',
   filters: [
     { id: 'free-region', dataset: 'region' },
-    { id: 'free-status', dataset: 'status' }
+    { id: 'free-status', dataset: 'status' },
+    { id: 'free-period', dataset: 'period' }
   ]
 });
 
