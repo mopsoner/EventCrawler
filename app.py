@@ -121,6 +121,7 @@ def init_db():
     ensure_column(cur, "events", "contact_website", "contact_website TEXT")
     ensure_column(cur, "events", "event_image", "event_image TEXT")
     ensure_column(cur, "events", "subtitle", "subtitle TEXT")
+    ensure_column(cur, "events", "description", "description TEXT")
     ensure_column(cur, "events", "manual_status", "manual_status TEXT")
     ensure_column(cur, "events", "private_note", "private_note TEXT")
     ensure_column(cur, "events", "is_watchlisted", "is_watchlisted INTEGER DEFAULT 0")
@@ -399,7 +400,7 @@ def stats():
 
 def list_events(limit=None, watchlist_only=False):
     c = conn()
-    select_cols = "id, event_url, region, name, subtitle, event_date, city, address, contact_phone, contact_email, contact_website, first_seen_at, score, manual_status, private_note, is_watchlisted"
+    select_cols = "id, event_url, region, name, subtitle, description, event_date, city, address, contact_phone, contact_email, contact_website, first_seen_at, score, manual_status, private_note, is_watchlisted"
     if has_column("events", "event_image"):
         select_cols += ", event_image"
     sql = f"SELECT {select_cols} FROM events"
@@ -415,7 +416,7 @@ def list_events(limit=None, watchlist_only=False):
 
 def list_free(limit=None):
     c = conn()
-    select_cols = "p.*, e.name AS event_name, e.subtitle AS event_subtitle, e.event_date AS event_date, e.region, e.event_url, e.first_seen_at AS event_first_seen, e.score, e.id AS event_id, e.manual_status AS manual_status, e.is_watchlisted AS is_watchlisted"
+    select_cols = "p.*, e.name AS event_name, e.subtitle AS event_subtitle, e.description AS event_description, e.event_date AS event_date, e.region, e.event_url, e.first_seen_at AS event_first_seen, e.score, e.id AS event_id, e.manual_status AS manual_status, e.is_watchlisted AS is_watchlisted"
     if has_column("events", "event_image"):
         select_cols += ", e.event_image AS event_image"
     sql = f"SELECT {select_cols} FROM products p JOIN events e ON e.id = p.event_id WHERE p.is_free = 1 AND COALESCE(p.numeric_price, -1) = 0 ORDER BY p.last_seen_at DESC"

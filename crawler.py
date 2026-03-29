@@ -64,6 +64,7 @@ def init_db():
             region TEXT,
             name TEXT,
             subtitle TEXT,
+            description TEXT,
             event_date TEXT,
             city TEXT,
             address TEXT,
@@ -125,6 +126,7 @@ def init_db():
     ensure_column(cur, "events", "contact_website", "contact_website TEXT")
     ensure_column(cur, "events", "event_image", "event_image TEXT")
     ensure_column(cur, "events", "subtitle", "subtitle TEXT")
+    ensure_column(cur, "events", "description", "description TEXT")
     ensure_column(cur, "events", "manual_status", "manual_status TEXT")
     ensure_column(cur, "events", "private_note", "private_note TEXT")
     ensure_column(cur, "events", "is_watchlisted", "is_watchlisted INTEGER DEFAULT 0")
@@ -211,6 +213,28 @@ def extract_event_image(soup):
         low = full.lower()
         if any(k in low for k in ["flyer", "affiche", "uploads", "/img/"]):
             return full
+    return None
+
+
+def extract_description(soup, lines):
+    for i, line in enumerate(lines):
+        low = line.lower()
+        if low in {"description", "descriptif", "about", "details"}:
+            block = []
+            for nxt in lines[i + 1:i + 30]:
+                nxt_low = nxt.lower()
+                if nxt_low in {"contact", "tickets", "produits", "products", "location", "lieu"}:
+                    break
+                if len(nxt) > 2:
+                    block.append(nxt)
+            text = normalize_text(" ".join(block))
+            if len(text) >= 30:
+                return text[:4000]
+    meta = soup.find("meta", attrs={"property": "og:description"}) or soup.find("meta", attrs={"name": "description"})
+    if meta and meta.get("content"):
+        text = normalize_text(meta.get("content"))
+        if text:
+            return text[:4000]
     return None
 
 
@@ -422,7 +446,8 @@ def build_event_from_item(item, session=None):
     title = soup.title.get_text(" ", strip=True) if soup.title else url
     name = header["name"] or normalize_text(title)
     image = extract_event_image(soup)
-    return {"event_url": url, "event_slug": slug, "event_external_id": external_id, "region": region, "name": name, "subtitle": header.get("subtitle"), "event_date": header.get("event_date"), "city": header.get("city"), "address": header.get("address"), "contact_phone": contact["contact_phone"], "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": image, "products": products, "score": score_event(name, region, products, contact, bool(image), header.get("event_date"))}
+    description = extract_description(soup, lines)
+    return {"event_url": url, "event_slug": slug, "event_external_id": external_id, "region": region, "name": name, "subtitle": header.get("subtitle"), "description": description, "event_date": header.get("event_date"), "city": header.get("city"), "address": header.get("address"), "contact_phone": contact["contact_phone"], "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": image, "products": products, "score": score_event(name, region, products, contact, bool(image), header.get("event_date"))}
 
 
 def worker(item):
@@ -447,9 +472,9 @@ def upsert_event(event):
     row = cur.fetchone()
     if row:
         event_id = row["id"]
-        cur.execute("UPDATE events SET event_external_id=?, event_slug=?, region=?, name=?, subtitle=?, event_date=?, city=?, address=?, contact_phone=?, contact_email=?, contact_website=?, event_image=?, score=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?", (event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("subtitle"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0), event_id))
+        cur.execute("UPDATE events SET event_external_id=?, event_slug=?, region=?, name=?, subtitle=?, description=?, event_date=?, city=?, address=?, contact_phone=?, contact_email=?, contact_website=?, event_image=?, score=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?", (event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("subtitle"), event.get("description"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0), event_id))
     else:
-        cur.execute("INSERT INTO events(event_url, event_external_id, event_slug, region, name, subtitle, event_date, city, address, contact_phone, contact_email, contact_website, event_image, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (event["event_url"], event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("subtitle"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0)))
+        cur.execute("INSERT INTO events(event_url, event_external_id, event_slug, region, name, subtitle, description, event_date, city, address, contact_phone, contact_email, contact_website, event_image, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (event["event_url"], event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("subtitle"), event.get("description"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0)))
         event_id = cur.lastrowid
     for p in event.get("products", []):
         cur.execute("SELECT id, numeric_price, is_free, is_available FROM products WHERE event_id=? AND product_name=? AND price_text=?", (event_id, p.get("product_name"), p.get("price_text")))
