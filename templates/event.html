@@ -15,10 +15,11 @@
       <div><span class="meta-label">Phone</span><div>{{ event.contact_phone or '—' }}</div></div>
       <div><span class="meta-label">Email</span><div>{{ event.contact_email or '—' }}</div></div>
       <div><span class="meta-label">Website</span><div>{% if event.contact_website %}<a href="{{ event.contact_website }}">{{ event.contact_website }}</a>{% else %}—{% endif %}</div></div>
-      <div><span class="meta-label">Bizouk</span><div><a href="{{ event.event_url }}">Open event page</a></div></div>
+      <div><span class="meta-label">Source</span><div><a href="{{ event.event_url }}">Open event page</a></div></div>
     </div>
     <div class="actions-row">
       <form method="post" action="/event/{{ event.id }}/watchlist"><button class="btn btn-secondary" type="submit">{% if event.is_watchlisted %}Remove watchlist{% else %}Add to watchlist{% endif %}</button></form>
+      <a class="btn btn-secondary" target="_blank" href="https://calendar.google.com/calendar/render?action=TEMPLATE&text={{ (event.name or 'Event')|urlencode }}&details={{ ((event.subtitle or '') ~ ' ' ~ (event.event_url or ''))|urlencode }}&location={{ ((event.address or '') ~ ' ' ~ (event.city or ''))|urlencode }}">Google Calendar</a>
     </div>
   </section>
   <aside class="panel image-panel">{% if event.event_image %}<img src="{{ event.event_image }}" alt="{{ event.name }}">{% else %}<div class="media-fallback big">No image</div>{% endif %}</aside>
