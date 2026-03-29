@@ -15,6 +15,8 @@ from config_store import load_config, save_config
 DB_PATH = "data/eventcrawler.sqlite"
 STATUS_PATH = Path("data/crawl_status.json")
 SCHEDULER_STATE_PATH = Path("data/scheduler_state.json")
+BOOKING_STATE_PATH = Path("data/booking_state.json")
+BOOKING_SCRIPT_PATH = Path("booking_prepare.js")
 NOISE_ORGANIZER_HOSTS = {
     "bizouk.com",
     "www.bizouk.com",
@@ -31,6 +33,8 @@ CRAWL_LOCK = threading.Lock()
 SCHEDULER_THREAD = None
 SCHEDULER_THREAD_LOCK = threading.Lock()
 SCHEDULER_LOOP_SECONDS = 30
+BOOKING_PROCESS = None
+BOOKING_LOCK = threading.Lock()
 
 
 def conn():
@@ -120,6 +124,11 @@ def init_db():
     ensure_column(cur, "events", "manual_status", "manual_status TEXT")
     ensure_column(cur, "events", "private_note", "private_note TEXT")
     ensure_column(cur, "events", "is_watchlisted", "is_watchlisted INTEGER DEFAULT 0")
+    ensure_column(cur, "products", "family_key", "family_key TEXT")
+    ensure_column(cur, "products", "early_bird_score", "early_bird_score INTEGER DEFAULT 0")
+    ensure_column(cur, "products", "is_early_bird", "is_early_bird INTEGER DEFAULT 0")
+    ensure_column(cur, "products", "early_bird_confidence", "early_bird_confidence TEXT")
+    ensure_column(cur, "products", "early_bird_reason", "early_bird_reason TEXT")
     c.commit()
     c.close()
 
@@ -131,6 +140,23 @@ def default_scheduler_state():
         "last_free_refresh_at": None,
         "current_job": None,
         "updated_at": None,
+    }
+
+
+def default_booking_state():
+    return {
+        "running": False,
+        "status": "idle",
+        "mode": "prepare_only",
+        "event_url": None,
+        "product_name": None,
+        "ticket_count": 0,
+        "email": None,
+        "started_at": None,
+        "finished_at": None,
+        "last_error": None,
+        "log_path": "data/booking.log",
+        "final_step_ready": False,
     }
 
 
@@ -160,6 +186,44 @@ def patch_scheduler_state(**fields):
     state = read_scheduler_state()
     state.update(fields)
     return write_scheduler_state(state)
+
+
+def read_booking_state():
+    if not BOOKING_STATE_PATH.exists():
+        return default_booking_state()
+    try:
+        data = json.loads(BOOKING_STATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        data = default_booking_state()
+    state = default_booking_state()
+    state.update(data if isinstance(data, dict) else {})
+    return state
+
+
+def booking_is_running():
+    global BOOKING_PROCESS
+    return bool(BOOKING_PROCESS and BOOKING_PROCESS.poll() is None)
+
+
+def launch_booking_prepare(event_url: str, ticket_count: int, email: str, product_name: str):
+    global BOOKING_PROCESS
+    with BOOKING_LOCK:
+        if BOOKING_PROCESS and BOOKING_PROCESS.poll() is None:
+            return False
+        log_path = Path("data/booking_runner.log")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(log_path, "a", encoding="utf-8")
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        BOOKING_PROCESS = subprocess.Popen([
+            "node",
+            str(BOOKING_SCRIPT_PATH),
+            "--event-url", event_url,
+            "--ticket-count", str(ticket_count),
+            "--email", email,
+            "--product-name", product_name,
+        ], env=env, stdout=log_file, stderr=subprocess.STDOUT)
+        return True
 
 
 def crawl_is_running():
@@ -532,6 +596,22 @@ def stop_crawl_now():
     return redirect(request.referrer or url_for("dashboard"))
 
 
+@app.route("/booking/prepare", methods=["POST"])
+def booking_prepare():
+    data = request.get_json(silent=True) or request.form
+    event_url = (data.get("event_url") or "").strip()
+    product_name = (data.get("product_name") or "").strip()
+    email = (data.get("email") or "").strip() or "contact@sejourcarnaval.com"
+    try:
+        ticket_count = max(1, int(data.get("ticket_count", 2)))
+    except Exception:
+        ticket_count = 2
+    if not event_url or not product_name:
+        return jsonify({"status": "error", "message": "missing event_url or product_name"}), 400
+    started = launch_booking_prepare(event_url, ticket_count, email, product_name)
+    return jsonify({"status": "started" if started else "busy", "state": read_booking_state()})
+
+
 @app.route("/scheduler/start", methods=["POST"])
 def scheduler_start():
     ensure_scheduler_thread()
@@ -575,7 +655,7 @@ def watchlist():
 
 @app.route("/free")
 def free():
-    return render_template("free.html", rows=list_free())
+    return render_template("free.html", rows=list_free(), booking_state=read_booking_state())
 
 
 @app.route("/opportunities")
@@ -676,6 +756,11 @@ def api_crawl_status():
 @app.route("/api/scheduler_status")
 def api_scheduler_status():
     return jsonify(read_scheduler_state())
+
+
+@app.route("/api/booking_status")
+def api_booking_status():
+    return jsonify(read_booking_state())
 
 
 init_db()
