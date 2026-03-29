@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from flask import Flask, jsonify, redirect, render_template, request, url_for
 
-from config_store import load_config, save_config
+from config_store import load_config, save_config, slugify_region_name
 
 DB_PATH = "data/eventcrawler.sqlite"
 STATUS_PATH = Path("data/crawl_status.json")
@@ -704,10 +704,27 @@ def config_page():
     if request.method == "POST":
         current = load_config()
         regions = {}
-        for name, region in current["regions"].items():
+        region_names = request.form.getlist("region_names")
+        for raw_name in region_names:
+            name = slugify_region_name(raw_name)
+            if not name:
+                continue
+            if request.form.get(f"region_delete_{name}") == "on":
+                continue
+            previous = current["regions"].get(name, {})
+            url_value = (request.form.get(f"region_url_{name}", previous.get("url", "")) or "").strip()
+            if not url_value:
+                continue
             regions[name] = {
                 "enabled": request.form.get(f"region_enabled_{name}") == "on",
-                "url": request.form.get(f"region_url_{name}", region["url"]).strip() or region["url"],
+                "url": url_value,
+            }
+        new_region_name = slugify_region_name(request.form.get("new_region_name", ""))
+        new_region_url = (request.form.get("new_region_url") or "").strip()
+        if new_region_name and new_region_url:
+            regions[new_region_name] = {
+                "enabled": request.form.get("new_region_enabled") == "on",
+                "url": new_region_url,
             }
         new_config = {
             "max_workers": request.form.get("max_workers", current["max_workers"]),

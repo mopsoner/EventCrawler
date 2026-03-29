@@ -61,15 +61,42 @@
     </label>
     <div class="region-stack">
       {% for name, region in config.regions.items() %}
+      <input type="hidden" name="region_names" value="{{ name }}">
       <div class="region-card">
         <label class="toggle-line">
           <input type="checkbox" name="region_enabled_{{ name }}" {% if region.enabled %}checked{% endif %}>
           <span>{{ name|capitalize }}</span>
         </label>
         <input type="text" name="region_url_{{ name }}" value="{{ region.url }}">
+        <label class="toggle-line">
+          <input type="checkbox" name="region_delete_{{ name }}">
+          <span>Delete this region</span>
+        </label>
       </div>
       {% endfor %}
     </div>
+    <section class="panel" style="margin-top:18px;">
+      <div class="panel-header">
+        <div>
+          <h2>Add new region</h2>
+          <p>Ajoute une nouvelle région qui sera sauvegardée et utilisée par le crawler.</p>
+        </div>
+      </div>
+      <div class="form-grid">
+        <label class="field">
+          <span>Region name</span>
+          <input type="text" name="new_region_name" placeholder="ex: martinique">
+        </label>
+        <label class="field">
+          <span>Region URL</span>
+          <input type="text" name="new_region_url" placeholder="https://www.bizouk.com/?region=martinique">
+        </label>
+      </div>
+      <label class="toggle-line" style="margin-top:12px;">
+        <input type="checkbox" name="new_region_enabled" checked>
+        <span>Enable immediately</span>
+      </label>
+    </section>
     <div class="form-actions"><button type="submit" class="btn btn-primary">Save config</button></div>
   </form>
 </section>

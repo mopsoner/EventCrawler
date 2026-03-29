@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 CONFIG_PATH = Path("data/config.json")
@@ -18,6 +19,11 @@ DEFAULT_CONFIG = {
 }
 
 
+def slugify_region_name(name: str) -> str:
+    value = re.sub(r"[^a-z0-9]+", "_", (name or "").strip().lower())
+    return value.strip("_")
+
+
 def _merge_defaults(data: dict) -> dict:
     merged = json.loads(json.dumps(DEFAULT_CONFIG))
     if not isinstance(data, dict):
@@ -31,14 +37,19 @@ def _merge_defaults(data: dict) -> dict:
     ):
         if key in data:
             merged[key] = data[key]
-    if isinstance(data.get("regions"), dict):
-        for name, region in merged["regions"].items():
-            incoming = data["regions"].get(name)
-            if isinstance(incoming, dict):
-                if "enabled" in incoming:
-                    region["enabled"] = bool(incoming["enabled"])
-                if incoming.get("url"):
-                    region["url"] = str(incoming["url"]).strip()
+    incoming_regions = data.get("regions") if isinstance(data.get("regions"), dict) else {}
+    for raw_name, incoming in incoming_regions.items():
+        if not isinstance(incoming, dict):
+            continue
+        name = slugify_region_name(raw_name)
+        if not name:
+            continue
+        if name not in merged["regions"]:
+            merged["regions"][name] = {"enabled": False, "url": ""}
+        if "enabled" in incoming:
+            merged["regions"][name]["enabled"] = bool(incoming["enabled"])
+        if "url" in incoming:
+            merged["regions"][name]["url"] = str(incoming.get("url") or "").strip()
     return merged
 
 
@@ -76,6 +87,21 @@ def save_config(data: dict) -> dict:
     except Exception:
         merged["free_product_refresh_frequency_hours"] = 24
     merged["user_agent"] = str(merged.get("user_agent") or "Mozilla/5.0").strip() or "Mozilla/5.0"
+
+    clean_regions = {}
+    for raw_name, region in (merged.get("regions") or {}).items():
+        name = slugify_region_name(raw_name)
+        if not name or not isinstance(region, dict):
+            continue
+        url = str(region.get("url") or "").strip()
+        if not url:
+            continue
+        clean_regions[name] = {
+            "enabled": bool(region.get("enabled")),
+            "url": url,
+        }
+    merged["regions"] = clean_regions
+
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
     return merged
