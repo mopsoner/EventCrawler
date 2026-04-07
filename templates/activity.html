@@ -1,7 +1,123 @@
 {% extends 'base.html' %}
 {% block title %}Activity · EventCrawler V2{% endblock %}
 {% block content %}
-<section class="page-head"><div><div class="eyebrow">Timeline</div><h1>Activity</h1><p>Historique des changements produits et runs de crawl.</p></div></section>
-<section class="panel"><div class="panel-header"><div><h2>Product history</h2></div></div><div class="table-wrap"><table class="table"><thead><tr><th>Event</th><th>Product</th><th>Change</th><th>Old</th><th>New</th><th>When</th></tr></thead><tbody>{% for r in rows %}<tr><td>{% if r.event_id %}<a href="/event/{{ r.event_id }}">{{ r.event_name or '—' }}</a>{% else %}—{% endif %}</td><td>{{ r.product_name }}</td><td>{{ r.change_type }}</td><td>{% if r.old_price is not none %}{{ r.old_price }}€{% else %}—{% endif %}</td><td>{% if r.new_price is not none %}{{ r.new_price }}€{% else %}—{% endif %}</td><td>{{ r.observed_ago }}</td></tr>{% endfor %}</tbody></table></div></section>
-<section class="panel"><div class="panel-header"><div><h2>Crawl runs</h2></div></div><div class="table-wrap"><table class="table"><thead><tr><th>Started</th><th>Regions</th><th>Status</th><th>Queued</th><th>Processed</th><th>Errors</th></tr></thead><tbody>{% for r in crawl_runs %}<tr><td>{{ r.started_ago }}</td><td>{{ r.regions or '—' }}</td><td>{{ r.status or '—' }}</td><td>{{ r.events_queued }}</td><td>{{ r.events_processed }}</td><td>{{ r.errors_count }}</td></tr>{% endfor %}</tbody></table></div></section>
+<section class="page-head">
+  <div>
+    <div class="eyebrow">Timeline</div>
+    <h1>Activity</h1>
+    <p>Historique des changements produits et runs de crawl.</p>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-header"><div><h2>Product history</h2></div></div>
+  <div class="toolbar">
+    <input id="activity-search" class="toolbar-input" type="text" placeholder="Rechercher un événement, un produit, un changement…">
+    <select id="activity-change" class="toolbar-select">
+      <option value="">Tous les changements</option>
+      {% for c in rows|map(attribute='change_type')|unique|list|sort %}
+      <option value="{{ c }}">{{ c }}</option>
+      {% endfor %}
+    </select>
+    <select id="activity-region" class="toolbar-select">
+      <option value="">Toutes les régions</option>
+      {% for r in rows|map(attribute='region')|reject('equalto', None)|unique|list|sort %}
+      <option value="{{ r }}">{{ r|capitalize }}</option>
+      {% endfor %}
+    </select>
+    <select id="activity-recency" class="toolbar-select">
+      <option value="">Toutes les périodes</option>
+      <option value="instant">À l’instant</option>
+      <option value="minutes">Dernières minutes</option>
+      <option value="hours">Dernières heures</option>
+      <option value="days">Derniers jours</option>
+      <option value="months">Derniers mois</option>
+    </select>
+    <button id="activity-reset" class="btn btn-secondary" type="button">Reset</button>
+  </div>
+  <div class="table-wrap">
+    <table class="table" id="activity-table">
+      <thead>
+        <tr><th data-sort="event">Event</th><th data-sort="product">Product</th><th data-sort="change">Change</th><th data-sort="old" data-type="number">Old</th><th data-sort="new" data-type="number">New</th><th data-sort="when">When</th></tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr data-event="{{ (r.event_name or '')|lower }}" data-product="{{ (r.product_name or '')|lower }}" data-change="{{ r.change_type or '' }}" data-region="{{ r.region or '' }}" data-recency="{{ r.observed_ago or '' }}" data-old="{{ r.old_price if r.old_price is not none else -1 }}" data-new="{{ r.new_price if r.new_price is not none else -1 }}" data-when="{{ r.observed_at or '' }}">
+          <td>{% if r.event_id %}<a href="/event/{{ r.event_id }}">{{ r.event_name or '—' }}</a>{% else %}—{% endif %}</td>
+          <td>{{ r.product_name }}</td>
+          <td><span class="badge">{{ r.change_type }}</span></td>
+          <td>{% if r.old_price is not none %}{{ r.old_price }}€{% else %}—{% endif %}</td>
+          <td>{% if r.new_price is not none %}{{ r.new_price }}€{% else %}—{% endif %}</td>
+          <td>{{ r.observed_ago }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-header"><div><h2>Crawl runs</h2></div></div>
+  <div class="toolbar">
+    <select id="runs-status" class="toolbar-select">
+      <option value="">Tous les statuts</option>
+      {% for s in crawl_runs|map(attribute='status')|unique|list|sort %}
+      <option value="{{ s }}">{{ s }}</option>
+      {% endfor %}
+    </select>
+    <button id="runs-reset" class="btn btn-secondary" type="button">Reset</button>
+  </div>
+  <div class="table-wrap">
+    <table class="table" id="runs-table">
+      <thead><tr><th>Started</th><th>Regions</th><th>Status</th><th>Queued</th><th>Processed</th><th>Errors</th></tr></thead>
+      <tbody>
+        {% for r in crawl_runs %}
+        <tr data-status="{{ r.status or '' }}">
+          <td>{{ r.started_ago }}</td>
+          <td>{{ r.regions or '—' }}</td>
+          <td>{{ r.status or '—' }}</td>
+          <td>{{ r.events_queued }}</td>
+          <td>{{ r.events_processed }}</td>
+          <td>{{ r.errors_count }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='table.js') }}"></script>
+<script>
+function recencyBucket(text) {
+  const low = (text || '').toLowerCase();
+  if (low.includes('à l’instant') || low.includes("à l'instant")) return 'instant';
+  if (low.includes('min')) return 'minutes';
+  if (low.includes(' h')) return 'hours';
+  if (low.includes('jour')) return 'days';
+  if (low.includes('mois') || low.includes('an')) return 'months';
+  return '';
+}
+
+document.querySelectorAll('#activity-table tbody tr').forEach((row) => {
+  row.dataset.recency = recencyBucket(row.dataset.recency || '');
+});
+
+initDataTable('activity-table', {
+  searchId: 'activity-search',
+  resetId: 'activity-reset',
+  filters: [
+    { id: 'activity-change', dataset: 'change' },
+    { id: 'activity-region', dataset: 'region' },
+    { id: 'activity-recency', dataset: 'recency' }
+  ]
+});
+
+initDataTable('runs-table', {
+  resetId: 'runs-reset',
+  filters: [
+    { id: 'runs-status', dataset: 'status' }
+  ]
+});
+</script>
 {% endblock %}
