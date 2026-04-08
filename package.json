@@ -1,0 +1,14 @@
+{
+  "name": "eventcrawler",
+  "version": "1.0.0",
+  "private": true,
+  "description": "EventCrawler booking automation helpers",
+  "scripts": {
+    "postinstall": "npx playwright install chromium",
+    "playwright:install": "playwright install chromium",
+    "playwright:install-deps": "playwright install-deps chromium"
+  },
+  "dependencies": {
+    "playwright": "^1.52.0"
+  }
+}
