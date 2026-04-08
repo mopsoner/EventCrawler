@@ -1,0 +1,14 @@
+{
+  "running": true,
+  "status": "running",
+  "mode": "prepare_only",
+  "event_url": "https://www.bizouk.com/events/details/carnaval-de-londres-2026/104069",
+  "product_name": "Pre-registration",
+  "ticket_count": 2,
+  "email": "contact@sejourcarnaval.com",
+  "started_at": "2026-04-08T21:31:31.546Z",
+  "finished_at": null,
+  "last_error": null,
+  "log_path": "/home/runner/workspace/data/booking.log",
+  "final_step_ready": false
+}
