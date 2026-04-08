@@ -1,6 +1,15 @@
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 const { chromium } = require('playwright');
+
+function getChromiumExecutable() {
+  try {
+    const p = execSync('which chromium 2>/dev/null || which chromium-browser 2>/dev/null', { encoding: 'utf8' }).trim();
+    if (p) return p;
+  } catch (_) {}
+  return undefined;
+}
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 const STATE_PATH = path.join(DATA_DIR, 'booking_state.json');
@@ -206,7 +215,8 @@ async function runPrepare(eventUrl, ticketCount, email, productName) {
     final_step_ready: false,
   });
   logLine(`Starting prepare-only flow for ${eventUrl} / ${productName} / qty=${ticketCount} / email=${email}`);
-  const browser = await chromium.launch({ headless: DEFAULT_HEADLESS, slowMo: DEFAULT_SLOWMO });
+  const executablePath = getChromiumExecutable();
+  const browser = await chromium.launch({ headless: DEFAULT_HEADLESS, slowMo: DEFAULT_SLOWMO, ...(executablePath ? { executablePath } : {}) });
   const page = await browser.newPage();
   const prefix = slugify(productName);
   try {
