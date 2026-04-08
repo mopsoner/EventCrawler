@@ -1,5 +1,7 @@
 {pkgs}: {
   deps = [
+    pkgs.eudev
+    pkgs.libgbm
     pkgs.chromium
     pkgs.libdrm
     pkgs.mesa
