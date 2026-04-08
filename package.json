@@ -4,6 +4,7 @@
   "private": true,
   "description": "EventCrawler booking automation helpers",
   "scripts": {
+    "postinstall": "npx playwright install chromium",
     "playwright:install": "playwright install chromium",
     "playwright:install-deps": "playwright install-deps chromium"
   },
