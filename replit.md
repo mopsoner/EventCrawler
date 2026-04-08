@@ -41,7 +41,31 @@ It listens on `0.0.0.0:5000`.
 - Multi-region event monitoring
 - Smart event scoring (keywords, region, free tickets)
 - Price history tracking
-- Booking automation via Playwright (Chromium)
+- Full end-to-end booking automation via Playwright (Chromium)
+
+## Booking Automation (`booking_prepare.js`)
+
+Handles the complete Bizouk booking flow automatically:
+
+1. Load event page → accept cookie banner
+2. Click `.qty-btn.qty-plus` for ticket quantity
+3. Click "Continue booking" → navigate to `/stores/reservation/order-attendees`
+4. Fill all attendee fields per ticket:
+   - Text fields matched by label: NAME, First name, E-MAIL, Portable
+   - Multi-select checkbox groups (`name[]`): first option checked
+   - Single terms checkboxes (matched by label/ancestor text): checked
+   - Radio groups: first option selected
+5. Navigate to `/stores/reservation/order-information`
+6. CGV toggle (hidden checkbox) force-checked via `page.evaluate`
+7. Click "Continuer vers le paiement"
+8. Detect confirmation via URL `/stores/reservation/confirmation`
+
+**Default user data:** First=Olivier, Last=Mops, Phone=0691243236  
+**Success state:** `data/booking_state.json` → `status: "confirmed"`
+
+**Environment variables:**
+- `PLAYWRIGHT_HEADLESS=0` — run in headed mode (default: headless)
+- `PLAYWRIGHT_SLOWMO=<ms>` — slow down automation (default: 200ms)
 
 ## Deployment
 

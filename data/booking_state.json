@@ -1,14 +1,15 @@
 {
-  "running": true,
-  "status": "running",
-  "mode": "prepare_only",
+  "running": false,
+  "status": "confirmed",
+  "mode": "auto_confirm",
   "event_url": "https://www.bizouk.com/events/details/carnaval-de-londres-2026/104069",
   "product_name": "Pre-registration",
   "ticket_count": 2,
   "email": "contact@sejourcarnaval.com",
-  "started_at": "2026-04-08T21:38:55.574Z",
-  "finished_at": null,
+  "started_at": "2026-04-08T22:15:32.982Z",
+  "finished_at": "2026-04-08T22:16:07.741Z",
   "last_error": null,
   "log_path": "/home/runner/workspace/data/booking.log",
-  "final_step_ready": false
+  "confirmation_text": "Confirmed (URL: https://www.bizouk.com/stores/reservation/confirmation | Title: Bizouk.com - Billetterie - Confirmation de paiement)",
+  "final_step_ready": true
 }
