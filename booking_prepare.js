@@ -12,6 +12,9 @@ const DEFAULT_LAST_NAME = 'Mops';
 const DEFAULT_FULL_NAME = 'Olivier Mops';
 const DEFAULT_PHONE = '0691243236';
 const DEFAULT_GENDER = 'Homme';
+const DEFAULT_HEADLESS = process.env.PLAYWRIGHT_HEADLESS === '1' || String(process.env.PLAYWRIGHT_HEADLESS || '').toLowerCase() === 'true';
+const DEFAULT_SLOWMO = Number(process.env.PLAYWRIGHT_SLOWMO || '250');
+const DEFAULT_KEEP_OPEN_MS = Number(process.env.PLAYWRIGHT_KEEP_OPEN_MS || '120000');
 
 function ensureDir(dir) { fs.mkdirSync(dir, { recursive: true }); }
 function defaultState() {
@@ -203,7 +206,7 @@ async function runPrepare(eventUrl, ticketCount, email, productName) {
     final_step_ready: false,
   });
   logLine(`Starting prepare-only flow for ${eventUrl} / ${productName} / qty=${ticketCount} / email=${email}`);
-  const browser = await chromium.launch({ headless: false, slowMo: 250 });
+  const browser = await chromium.launch({ headless: DEFAULT_HEADLESS, slowMo: DEFAULT_SLOWMO });
   const page = await browser.newPage();
   const prefix = slugify(productName);
   try {
@@ -234,7 +237,7 @@ async function runPrepare(eventUrl, ticketCount, email, productName) {
       last_error: null,
     });
     logLine('Flow prepared up to final manual confirmation step');
-    await page.waitForTimeout(120000);
+    await page.waitForTimeout(DEFAULT_KEEP_OPEN_MS);
   } catch (err) {
     writeState({
       running: false,
