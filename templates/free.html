@@ -138,7 +138,7 @@ initDataTable('free-table', {
 });
 
 async function prepareBooking(eventUrl, productName, ticketCount, email) {
-  const ok = window.confirm("Préparer le flux d'achat jusqu'à la dernière étape avant validation finale ?");
+  const ok = window.confirm("Lancer la réservation automatique jusqu'à la confirmation finale ?");
   if (!ok) return;
   try {
     const res = await fetch('/booking/prepare', {
@@ -160,7 +160,7 @@ async function prepareBooking(eventUrl, productName, ticketCount, email) {
       alert('Un autre flux de préparation est déjà en cours.');
       return;
     }
-    alert('Flux lancé. Le navigateur de préparation va s’ouvrir et s’arrêter avant la validation finale.');
+    alert('Réservation lancée en arrière-plan. Vérifiez le statut dans le tableau de bord.');
   } catch (err) {
     alert('Erreur réseau pendant le lancement du flux.');
   }

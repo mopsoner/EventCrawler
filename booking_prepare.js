@@ -13,6 +13,7 @@ const DEFAULT_FULL_NAME = 'Olivier Mops';
 const DEFAULT_PHONE = '0691243236';
 const DEFAULT_HEADLESS = !(process.env.PLAYWRIGHT_HEADLESS === '0' || String(process.env.PLAYWRIGHT_HEADLESS || '').toLowerCase() === 'false');
 const DEFAULT_SLOWMO = Number(process.env.PLAYWRIGHT_SLOWMO || '200');
+const SCREENSHOTS_ENABLED = process.env.PLAYWRIGHT_SCREENSHOTS === '1';
 
 function ensureDir(dir) { fs.mkdirSync(dir, { recursive: true }); }
 function defaultState() {
@@ -48,6 +49,7 @@ function slugify(text) {
   return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'booking';
 }
 async function screenshot(page, name) {
+  if (!SCREENSHOTS_ENABLED) return;
   try {
     ensureDir(SCREEN_DIR);
     await page.screenshot({ path: path.join(SCREEN_DIR, `${name}.png`), fullPage: true });
