@@ -10,7 +10,7 @@
       "url": "https://www.bizouk.com/?region=london"
     },
     "guadeloupe": {
-      "enabled": false,
+      "enabled": true,
       "url": "https://www.bizouk.com/?region=guadeloupe"
     },
     "paris": {
