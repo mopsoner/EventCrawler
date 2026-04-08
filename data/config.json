@@ -1,0 +1,25 @@
+{
+  "max_workers": 6,
+  "request_timeout": 45,
+  "region_scan_frequency_minutes": 60,
+  "free_product_refresh_frequency_hours": 24,
+  "user_agent": "Mozilla/5.0",
+  "regions": {
+    "london": {
+      "enabled": true,
+      "url": "https://www.bizouk.com/?region=london"
+    },
+    "guadeloupe": {
+      "enabled": true,
+      "url": "https://www.bizouk.com/?region=guadeloupe"
+    },
+    "paris": {
+      "enabled": true,
+      "url": "https://www.bizouk.com/?region=paris"
+    },
+    "rotterdam": {
+      "enabled": true,
+      "url": "https://www.bizouk.com/?region=rotterdam"
+    }
+  }
+}
