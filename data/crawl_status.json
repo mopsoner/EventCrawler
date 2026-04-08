@@ -1,11 +1,11 @@
 {
-  "running": false,
+  "running": true,
   "regions": [
     "london"
   ],
   "max_workers": 6,
   "request_timeout": 45,
-  "started_at": null,
-  "finished_at": "2026-04-08T21:28:41.868400",
+  "started_at": "2026-04-08T22:28:51.707457",
+  "finished_at": null,
   "last_error": null
 }

@@ -1,15 +1,15 @@
 {
   "running": false,
-  "status": "confirmed",
+  "status": "failed",
   "mode": "auto_confirm",
-  "event_url": "https://www.bizouk.com/events/details/carnaval-de-londres-2026/104069",
-  "product_name": "Pre-registration",
-  "ticket_count": 2,
+  "event_url": "https://www.bizouk.com/events/details/showcase-christian-laskari/116078",
+  "product_name": "Entrée simple",
+  "ticket_count": 1,
   "email": "contact@sejourcarnaval.com",
-  "started_at": "2026-04-08T22:15:32.982Z",
-  "finished_at": "2026-04-08T22:16:07.741Z",
-  "last_error": null,
+  "started_at": "2026-04-08T22:28:01.607Z",
+  "finished_at": "2026-04-08T22:28:22.702Z",
+  "last_error": "TimeoutError: locator.waitFor: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByText('Entrée simple').first() to be visible\u001b[22m\n",
   "log_path": "/home/runner/workspace/data/booking.log",
-  "confirmation_text": "Confirmed (URL: https://www.bizouk.com/stores/reservation/confirmation | Title: Bizouk.com - Billetterie - Confirmation de paiement)",
+  "confirmation_text": null,
   "final_step_ready": true
 }
