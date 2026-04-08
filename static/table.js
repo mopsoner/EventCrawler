@@ -1,70 +1,160 @@
-function initDataTable(tableId, config = {}) {
+function initDataTable(tableId, options = {}) {
   const table = document.getElementById(tableId);
   if (!table) return;
-  const tbody = table.querySelector('tbody');
-  const rows = Array.from(tbody.querySelectorAll('tr'));
-  const search = config.searchId ? document.getElementById(config.searchId) : null;
-  const reset = config.resetId ? document.getElementById(config.resetId) : null;
-  const filters = (config.filters || []).map((item) => ({
-    el: document.getElementById(item.id),
-    dataset: item.dataset,
-    mode: item.mode || 'exact'
-  })).filter((item) => item.el);
 
-  function applyFilters() {
-    const q = (search?.value || '').toLowerCase().trim();
-    rows.forEach((row) => {
-      const text = row.innerText.toLowerCase();
-      const okSearch = !q || text.includes(q);
-      let okFilters = true;
-      for (const filter of filters) {
-        const wanted = String(filter.el.value || '').toLowerCase().trim();
-        if (!wanted) continue;
-        const actual = String(row.dataset[filter.dataset] || '').toLowerCase().trim();
-        if (filter.mode === 'includes') {
-          if (!actual.includes(wanted)) okFilters = false;
-        } else {
-          if (actual !== wanted) okFilters = false;
-        }
+  const tbody = table.querySelector('tbody');
+  if (!tbody) return;
+
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  const searchInput = options.searchId ? document.getElementById(options.searchId) : null;
+  const resetBtn = options.resetId ? document.getElementById(options.resetId) : null;
+  const filters = (options.filters || []).map((f) => ({
+    ...f,
+    el: document.getElementById(f.id),
+  }));
+
+  const storageKey = `eventcrawler:${window.location.pathname}:${tableId}`;
+
+  function loadState() {
+    try {
+      return JSON.parse(localStorage.getItem(storageKey) || '{}');
+    } catch {
+      return {};
+    }
+  }
+
+  function saveState() {
+    const state = {
+      search: searchInput ? searchInput.value : '',
+      filters: {},
+      sort: table.dataset.sort || '',
+      order: table.dataset.order || '',
+    };
+
+    filters.forEach((f) => {
+      if (f.el) state.filters[f.id] = f.el.value;
+    });
+
+    localStorage.setItem(storageKey, JSON.stringify(state));
+  }
+
+  function restoreState() {
+    const state = loadState();
+
+    if (searchInput && typeof state.search === 'string') {
+      searchInput.value = state.search;
+    }
+
+    filters.forEach((f) => {
+      if (f.el && state.filters && typeof state.filters[f.id] === 'string') {
+        f.el.value = state.filters[f.id];
       }
-      row.style.display = okSearch && okFilters ? '' : 'none';
+    });
+
+    if (state.sort) table.dataset.sort = state.sort;
+    if (state.order) table.dataset.order = state.order;
+  }
+
+  function rowMatchesSearch(row) {
+    if (!searchInput) return true;
+    const query = (searchInput.value || '').trim().toLowerCase();
+    if (!query) return true;
+    return row.textContent.toLowerCase().includes(query);
+  }
+
+  function rowMatchesFilters(row) {
+    return filters.every((f) => {
+      if (!f.el) return true;
+      const wanted = f.el.value;
+      if (!wanted) return true;
+      return String(row.dataset[f.dataset] || '') === wanted;
     });
   }
 
+  function applyFilters() {
+    rows.forEach((row) => {
+      row.style.display = rowMatchesSearch(row) && rowMatchesFilters(row) ? '' : 'none';
+    });
+    saveState();
+  }
+
+  function sortRows(column, order, type = 'text') {
+    const sorted = [...rows].sort((a, b) => {
+      let av = a.dataset[column] || '';
+      let bv = b.dataset[column] || '';
+
+      if (type === 'number') {
+        av = Number(av);
+        bv = Number(bv);
+        return order === 'asc' ? av - bv : bv - av;
+      }
+
+      av = String(av).toLowerCase();
+      bv = String(bv).toLowerCase();
+      return order === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+    });
+
+    sorted.forEach((row) => tbody.appendChild(row));
+    table.dataset.sort = column;
+    table.dataset.order = order;
+    saveState();
+  }
+
+  function applySavedSort() {
+    const sort = table.dataset.sort;
+    const order = table.dataset.order;
+    if (!sort || !order) return;
+
+    const th = table.querySelector(`th[data-sort="${sort}"]`);
+    const type = th ? th.dataset.type || 'text' : 'text';
+
+    table.querySelectorAll('th[data-sort]').forEach((x) => x.removeAttribute('data-order'));
+    if (th) th.setAttribute('data-order', order);
+
+    sortRows(sort, order, type);
+  }
+
   table.querySelectorAll('th[data-sort]').forEach((th) => {
-    th.style.cursor = 'pointer';
     th.addEventListener('click', () => {
-      const key = th.dataset.sort;
+      const column = th.dataset.sort;
       const type = th.dataset.type || 'text';
-      const asc = th.dataset.order !== 'asc';
-      table.querySelectorAll('th[data-sort]').forEach((other) => {
-        if (other !== th) other.dataset.order = '';
-      });
-      th.dataset.order = asc ? 'asc' : 'desc';
-      const sorted = [...rows].sort((a, b) => {
-        let va = a.dataset[key] || '';
-        let vb = b.dataset[key] || '';
-        if (type === 'number') {
-          va = parseFloat(String(va).replace(',', '.')) || 0;
-          vb = parseFloat(String(vb).replace(',', '.')) || 0;
-          return asc ? va - vb : vb - va;
-        }
-        va = String(va).toLowerCase();
-        vb = String(vb).toLowerCase();
-        return asc ? va.localeCompare(vb) : vb.localeCompare(va);
-      });
-      sorted.forEach((row) => tbody.appendChild(row));
+      const currentSort = table.dataset.sort;
+      const currentOrder = table.dataset.order || 'asc';
+      const nextOrder = currentSort === column && currentOrder === 'asc' ? 'desc' : 'asc';
+
+      table.querySelectorAll('th[data-sort]').forEach((x) => x.removeAttribute('data-order'));
+      th.setAttribute('data-order', nextOrder);
+
+      sortRows(column, nextOrder, type);
       applyFilters();
     });
   });
 
-  search?.addEventListener('input', applyFilters);
-  filters.forEach((filter) => filter.el.addEventListener('change', applyFilters));
-  reset?.addEventListener('click', () => {
-    if (search) search.value = '';
-    filters.forEach((filter) => { filter.el.value = ''; });
-    applyFilters();
+  if (searchInput) {
+    searchInput.addEventListener('input', applyFilters);
+  }
+
+  filters.forEach((f) => {
+    if (f.el) f.el.addEventListener('change', applyFilters);
   });
 
+  if (resetBtn) {
+    resetBtn.addEventListener('click', () => {
+      if (searchInput) searchInput.value = '';
+      filters.forEach((f) => {
+        if (f.el) f.el.value = '';
+      });
+
+      table.dataset.sort = '';
+      table.dataset.order = '';
+      table.querySelectorAll('th[data-sort]').forEach((x) => x.removeAttribute('data-order'));
+
+      localStorage.removeItem(storageKey);
+      applyFilters();
+    });
+  }
+
+  restoreState();
+  applySavedSort();
   applyFilters();
 }
