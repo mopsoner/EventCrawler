@@ -1,15 +1,15 @@
 {
-  "running": true,
-  "status": "running",
+  "running": false,
+  "status": "confirmed",
   "mode": "auto_confirm",
-  "event_url": "https://www.bizouk.com/events/details/carnaval-antigua/116164",
-  "product_name": "Pre-registration",
+  "event_url": "https://www.bizouk.com/events/details/la-retropical-du-26-avril/118602",
+  "product_name": "Invitation",
   "ticket_count": 2,
   "email": "contact@sejourcarnaval.com",
-  "started_at": "2026-04-09T00:27:31.490Z",
-  "finished_at": null,
+  "started_at": "2026-04-09T00:31:08.010Z",
+  "finished_at": "2026-04-09T00:31:33.541Z",
   "last_error": null,
   "log_path": "/home/runner/workspace/data/booking.log",
-  "confirmation_text": null,
+  "confirmation_text": "Confirmed (URL: https://www.bizouk.com/stores/reservation/confirmation | Title: Bizouk.com - Billetterie - Confirmation de paiement)",
   "final_step_ready": true
 }
