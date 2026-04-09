@@ -15,6 +15,8 @@ const DEFAULT_GENDER = (process.env.BOOKING_GENDER || 'Homme').trim() || 'Homme'
 const DEFAULT_HEADLESS = !(process.env.PLAYWRIGHT_HEADLESS === '0' || String(process.env.PLAYWRIGHT_HEADLESS || '').toLowerCase() === 'false');
 const DEFAULT_SLOWMO = Number(process.env.PLAYWRIGHT_SLOWMO || '200');
 const SCREENSHOTS_ENABLED = process.env.PLAYWRIGHT_SCREENSHOTS === '1';
+const SUCCESS_POLL_ATTEMPTS = Number(process.env.BOOKING_SUCCESS_POLL_ATTEMPTS || '8');
+const SUCCESS_POLL_DELAY_MS = Number(process.env.BOOKING_SUCCESS_POLL_DELAY_MS || '2500');
 
 function ensureDir(dir) { fs.mkdirSync(dir, { recursive: true }); }
 function defaultState() {
@@ -86,13 +88,7 @@ async function addTicketQuantity(page, productName, qty) {
   await target.waitFor({ timeout: 15000 });
   const container = target.locator('xpath=ancestor::div[3]').first();
   const plusSelectors = [
-    '.qty-btn.qty-plus',
-    '.qty-plus',
-    "button:has-text('+')",
-    "a:has-text('+')",
-    "[role='button']:has-text('+')",
-    "button:has-text('Ajouter')",
-    "button:has-text('Add')",
+    '.qty-btn.qty-plus', '.qty-plus', "button:has-text('+')", "a:has-text('+')", "[role='button']:has-text('+')", "button:has-text('Ajouter')", "button:has-text('Add')",
   ];
   let plus = null;
   for (const sel of plusSelectors) {
@@ -143,42 +139,27 @@ async function fillFormByLabels(page, email) {
     const type = (await input.getAttribute('type') || 'text').toLowerCase();
     if (!['text', 'email', 'tel', 'number'].includes(type)) continue;
     if (!(await input.isVisible())) continue;
-
     let value = null;
-    if ((labelText.includes('first') || labelText.includes('prénom') || labelText.includes('forename') || labelText.includes('given name'))) {
-      value = DEFAULT_FIRST_NAME;
-    } else if ((labelText.includes('last') || labelText.includes('name') || labelText.includes('nom') || labelText.includes('surname')) && !labelText.includes('first') && !labelText.includes('prénom')) {
-      value = DEFAULT_LAST_NAME;
-    } else if (labelText.includes('full') && labelText.includes('name')) {
-      value = DEFAULT_FULL_NAME;
-    } else if (labelText.includes('email') || labelText.includes('e-mail') || labelText.includes('courriel')) {
-      value = email;
-    } else if (labelText.includes('phone') || labelText.includes('portable') || labelText.includes('mobile') || labelText.includes('tel') || labelText.includes('téléphone')) {
-      value = DEFAULT_PHONE;
-    }
+    if ((labelText.includes('first') || labelText.includes('prénom') || labelText.includes('forename') || labelText.includes('given name'))) value = DEFAULT_FIRST_NAME;
+    else if ((labelText.includes('last') || labelText.includes('name') || labelText.includes('nom') || labelText.includes('surname')) && !labelText.includes('first') && !labelText.includes('prénom')) value = DEFAULT_LAST_NAME;
+    else if (labelText.includes('full') && labelText.includes('name')) value = DEFAULT_FULL_NAME;
+    else if (labelText.includes('email') || labelText.includes('e-mail') || labelText.includes('courriel')) value = email;
+    else if (labelText.includes('phone') || labelText.includes('portable') || labelText.includes('mobile') || labelText.includes('tel') || labelText.includes('téléphone')) value = DEFAULT_PHONE;
     if (value !== null) {
       try { await input.fill(value); } catch {}
     }
   }
-  const firstSelectors = ["input[name*='firstname']","input[name*='first_name']","input[id*='firstname']","input[id*='first_name']"];
-  for (const sel of firstSelectors) {
-    try { const loc = page.locator(sel); if (await loc.count() && await loc.first().isVisible()) await loc.first().fill(DEFAULT_FIRST_NAME); } catch {}
-  }
-  const lastSelectors = ["input[name*='lastname']","input[name*='last_name']","input[id*='lastname']","input[id*='last_name']"];
-  for (const sel of lastSelectors) {
-    try { const loc = page.locator(sel); if (await loc.count() && await loc.first().isVisible()) await loc.first().fill(DEFAULT_LAST_NAME); } catch {}
-  }
-  const fullSelectors = ["input[name*='fullname']","input[name*='full_name']","input[name*='buyer_name']","input[id*='fullname']","input[id*='buyer_name']"];
-  for (const sel of fullSelectors) {
-    try { const loc = page.locator(sel); if (await loc.count() && await loc.first().isVisible()) await loc.first().fill(DEFAULT_FULL_NAME); } catch {}
-  }
-  const emailSelectors = ["input[type='email']","input[name*='email']","input[id*='email']"];
-  for (const sel of emailSelectors) {
-    try { const loc = page.locator(sel); if (await loc.count() && await loc.first().isVisible()) await loc.first().fill(email); } catch {}
-  }
-  const phoneSelectors = ["input[name*='phone']","input[name*='mobile']","input[name*='tel']","input[id*='phone']","input[id*='mobile']"];
-  for (const sel of phoneSelectors) {
-    try { const loc = page.locator(sel); if (await loc.count() && await loc.first().isVisible()) await loc.first().fill(DEFAULT_PHONE); } catch {}
+  const groups = [
+    [DEFAULT_FIRST_NAME, ["input[name*='firstname']","input[name*='first_name']","input[id*='firstname']","input[id*='first_name']"]],
+    [DEFAULT_LAST_NAME, ["input[name*='lastname']","input[name*='last_name']","input[id*='lastname']","input[id*='last_name']"]],
+    [DEFAULT_FULL_NAME, ["input[name*='fullname']","input[name*='full_name']","input[name*='buyer_name']","input[id*='fullname']","input[id*='buyer_name']"]],
+    [email, ["input[type='email']","input[name*='email']","input[id*='email']"]],
+    [DEFAULT_PHONE, ["input[name*='phone']","input[name*='mobile']","input[name*='tel']","input[id*='phone']","input[id*='mobile']"]],
+  ];
+  for (const [val, selectors] of groups) {
+    for (const sel of selectors) {
+      try { const loc = page.locator(sel); if (await loc.count() && await loc.first().isVisible()) await loc.first().fill(val); } catch {}
+    }
   }
   await selectGender(page);
 }
@@ -190,10 +171,7 @@ async function selectRadioDefaults(page) {
       const name = await r.getAttribute('name') || '';
       if (!name || seen.has(name)) continue;
       seen.add(name);
-      try {
-        const isChecked = await r.isChecked();
-        if (!isChecked) await r.check();
-      } catch {}
+      try { if (!(await r.isChecked())) await r.check(); } catch {}
     }
   } catch {}
 }
@@ -254,16 +232,32 @@ async function detectSuccess(page) {
     ".order-confirmation", ".booking-confirmation", ".thank-you",
     "[class*='order-confirmed']", "[class*='booking-success']",
     "text=Votre réservation est confirmée", "text=Your booking is confirmed", "text=Votre commande est confirmée", "text=Your order is confirmed",
-    "text=Merci pour votre réservation", "text=Thank you for your booking", "text=Réservation confirmée", "text=Booking confirmed",
-    "text=Commande confirmée", "text=Order confirmed",
+    "text=Merci pour votre réservation", "text=Thank you for your booking", "text=Réservation confirmée", "text=Booking confirmed", "text=Commande confirmée", "text=Order confirmed",
+    "text=Numéro de commande", "text=Order number", "text=Référence de commande", "text=Booking reference",
   ];
   for (const sel of selectors) {
     try {
       const loc = page.locator(sel).first();
-      if (await loc.isVisible({ timeout: 500 })) {
+      if (await loc.isVisible({ timeout: 700 })) {
         return (await loc.textContent() || sel).trim().slice(0, 300);
       }
     } catch {}
+  }
+  return null;
+}
+async function waitForSuccessAfterSubmit(page, prefix) {
+  for (let attempt = 1; attempt <= SUCCESS_POLL_ATTEMPTS; attempt++) {
+    try { await page.waitForLoadState('networkidle', { timeout: SUCCESS_POLL_DELAY_MS }); } catch {}
+    const success = await detectSuccess(page);
+    if (success) {
+      await screenshot(page, `${prefix}-confirmed-late`);
+      logLine(`Late confirmation detected on attempt ${attempt}: ${success}`);
+      return success;
+    }
+    const url = page.url();
+    const title = await page.title().catch(() => '');
+    logLine(`Confirmation poll ${attempt}/${SUCCESS_POLL_ATTEMPTS}: no success yet | URL=${url} | Title=${title}`);
+    if (attempt < SUCCESS_POLL_ATTEMPTS) await page.waitForTimeout(SUCCESS_POLL_DELAY_MS);
   }
   return null;
 }
@@ -317,6 +311,11 @@ async function runPrepare(eventUrl, ticketCount, email, productName) {
         writeState({ running: false, status: 'confirmed', finished_at: new Date().toISOString(), last_error: null, confirmation_text: successAfter });
         return;
       }
+    }
+    const delayedSuccess = await waitForSuccessAfterSubmit(page, prefix);
+    if (delayedSuccess) {
+      writeState({ running: false, status: 'confirmed', finished_at: new Date().toISOString(), last_error: null, confirmation_text: delayedSuccess });
+      return;
     }
     const finalUrl = page.url();
     const finalTitle = await page.title().catch(() => '');
