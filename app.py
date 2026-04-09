@@ -114,6 +114,22 @@ def init_db():
             error_text TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS tickets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            booking_started_at TEXT,
+            booked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            event_id INTEGER,
+            event_url TEXT,
+            event_name TEXT,
+            event_date TEXT,
+            region TEXT,
+            product_name TEXT,
+            ticket_count INTEGER DEFAULT 1,
+            email TEXT,
+            status TEXT,
+            confirmation_text TEXT,
+            UNIQUE(booking_started_at, event_url, product_name, email)
+        );
         '''
     )
     ensure_column(cur, "events", "event_external_id", "event_external_id TEXT")
@@ -148,7 +164,7 @@ def default_booking_state():
     return {
         "running": False,
         "status": "idle",
-        "mode": "prepare_only",
+        "mode": "auto_confirm",
         "event_url": None,
         "product_name": None,
         "ticket_count": 0,
@@ -157,7 +173,7 @@ def default_booking_state():
         "finished_at": None,
         "last_error": None,
         "log_path": "data/booking.log",
-        "final_step_ready": False,
+        "confirmation_text": None,
     }
 
 
@@ -189,15 +205,53 @@ def patch_scheduler_state(**fields):
     return write_scheduler_state(state)
 
 
-def read_booking_state():
+def sync_ticket_from_booking_state(state=None):
+    state = state or read_booking_state(raw=True)
+    if state.get("status") not in {"confirmed", "submitted_unconfirmed"}:
+        return
+    event_url = (state.get("event_url") or "").strip()
+    product_name = (state.get("product_name") or "").strip()
+    email = (state.get("email") or "").strip().lower()
+    booking_started_at = state.get("started_at") or state.get("finished_at") or datetime.utcnow().isoformat()
+    if not event_url or not product_name or not email:
+        return
+    c = conn()
+    event = c.execute("SELECT id, name, event_date, region FROM events WHERE event_url=?", (event_url,)).fetchone()
+    try:
+        c.execute(
+            "INSERT OR IGNORE INTO tickets(booking_started_at, booked_at, event_id, event_url, event_name, event_date, region, product_name, ticket_count, email, status, confirmation_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                booking_started_at,
+                state.get("finished_at") or datetime.utcnow().isoformat(),
+                event["id"] if event else None,
+                event_url,
+                event["name"] if event else event_url,
+                event["event_date"] if event else None,
+                event["region"] if event else None,
+                product_name,
+                int(state.get("ticket_count") or 1),
+                email,
+                state.get("status"),
+                state.get("confirmation_text"),
+            ),
+        )
+        c.commit()
+    finally:
+        c.close()
+
+
+def read_booking_state(raw=False):
     if not BOOKING_STATE_PATH.exists():
-        return default_booking_state()
+        state = default_booking_state()
+        return state
     try:
         data = json.loads(BOOKING_STATE_PATH.read_text(encoding="utf-8"))
     except Exception:
         data = default_booking_state()
     state = default_booking_state()
     state.update(data if isinstance(data, dict) else {})
+    if not raw:
+        sync_ticket_from_booking_state(state)
     return state
 
 
@@ -376,7 +430,7 @@ def has_column(table, column):
 
 def decorate_rows(rows):
     for row in rows:
-        row["added_at"] = row.get("first_seen_at") or row.get("event_first_seen")
+        row["added_at"] = row.get("first_seen_at") or row.get("event_first_seen") or row.get("booked_at")
         row["added_ago"] = time_ago(row.get("added_at"))
         row["is_watchlisted"] = bool(row.get("is_watchlisted", 0))
     return rows
@@ -390,6 +444,7 @@ def stats():
         "free_products": cur.execute("SELECT COUNT(*) FROM products WHERE COALESCE(numeric_price, -1) = 0 AND is_free = 1").fetchone()[0],
         "free_available": cur.execute("SELECT COUNT(*) FROM products WHERE COALESCE(numeric_price, -1) = 0 AND is_free = 1 AND is_available = 1").fetchone()[0],
         "watchlist": cur.execute("SELECT COUNT(*) FROM events WHERE COALESCE(is_watchlisted,0)=1").fetchone()[0],
+        "tickets": cur.execute("SELECT COUNT(*) FROM tickets").fetchone()[0],
         "organizers": 0,
         "last_seen_at": cur.execute("SELECT MAX(last_seen_at) FROM events").fetchone()[0],
     }
@@ -420,6 +475,16 @@ def list_free(limit=None):
     if has_column("events", "event_image"):
         select_cols += ", e.event_image AS event_image"
     sql = f"SELECT {select_cols} FROM products p JOIN events e ON e.id = p.event_id WHERE p.is_free = 1 AND COALESCE(p.numeric_price, -1) = 0 ORDER BY p.last_seen_at DESC"
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    rows = [dict(r) for r in c.execute(sql).fetchall()]
+    c.close()
+    return decorate_rows(rows)
+
+
+def list_tickets(limit=None):
+    c = conn()
+    sql = "SELECT * FROM tickets ORDER BY booked_at DESC, id DESC"
     if limit:
         sql += f" LIMIT {int(limit)}"
     rows = [dict(r) for r in c.execute(sql).fetchall()]
@@ -659,6 +724,11 @@ def free():
     return render_template("free.html", rows=list_free(), booking_state=read_booking_state())
 
 
+@app.route("/tickets")
+def tickets():
+    return render_template("tickets.html", rows=list_tickets())
+
+
 @app.route("/opportunities")
 def opportunities():
     return render_template("opportunities.html", rows=list_opportunities())
@@ -749,6 +819,11 @@ def api_events():
 @app.route("/api/free")
 def api_free():
     return jsonify(list_free())
+
+
+@app.route("/api/tickets")
+def api_tickets():
+    return jsonify(list_tickets())
 
 
 @app.route("/api/opportunities")

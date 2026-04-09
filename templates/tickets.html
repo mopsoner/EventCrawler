@@ -1,0 +1,122 @@
+{% extends 'base.html' %}
+{% block title %}Tickets · EventCrawler{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <div class="eyebrow">Bookings</div>
+    <h1>Tickets</h1>
+    <p>Liste des réservations enregistrées après confirmation ou soumission finale.</p>
+  </div>
+</section>
+<section class="panel">
+  <div class="toolbar">
+    <input id="tickets-search" class="toolbar-input" type="text" placeholder="Rechercher un ticket, un événement, un email…">
+    <select id="tickets-region" class="toolbar-select">
+      <option value="">Toutes les régions</option>
+      {% for r in rows|map(attribute='region')|reject('equalto', None)|unique|list|sort %}
+      <option value="{{ r }}">{{ r|capitalize }}</option>
+      {% endfor %}
+    </select>
+    <select id="tickets-status" class="toolbar-select">
+      <option value="">Tous les statuts</option>
+      {% for s in rows|map(attribute='status')|reject('equalto', None)|unique|list|sort %}
+      <option value="{{ s }}">{{ s }}</option>
+      {% endfor %}
+    </select>
+    <select id="tickets-period" class="toolbar-select">
+      <option value="">Toutes les périodes</option>
+      <option value="today">Today</option>
+      <option value="this_week">This week</option>
+      <option value="next_week">Next week</option>
+      <option value="this_month">This month</option>
+      <option value="next_month">Next month</option>
+      <option value="past">Past</option>
+      <option value="unknown">Date unknown</option>
+    </select>
+    <button id="tickets-reset" class="btn btn-secondary" type="button">Reset</button>
+  </div>
+  <div class="table-wrap">
+    <table class="table" id="tickets-table">
+      <thead>
+        <tr><th data-sort="event">Event</th><th data-sort="date">Date event</th><th data-sort="booked">Booked</th><th data-sort="region">Region</th><th data-sort="product">Product</th><th data-sort="qty" data-type="number">Qty</th><th>Email</th><th data-sort="status">Status</th><th>Confirmation</th><th>Open</th></tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr data-event="{{ (r.event_name or r.event_url)|lower }}" data-date="{{ r.event_date or '' }}" data-booked="{{ r.booked_at or '' }}" data-region="{{ r.region or '' }}" data-product="{{ (r.product_name or '')|lower }}" data-qty="{{ r.ticket_count or 0 }}" data-status="{{ r.status or '' }}" data-period="unknown">
+          <td>
+            {% if r.event_id %}<a href="/event/{{ r.event_id }}">{{ r.event_name or r.event_url }}</a>{% else %}{{ r.event_name or r.event_url }}{% endif %}
+            <div class="cell-sub"><span class="badge js-period-badge" style="display:none"></span></div>
+          </td>
+          <td>{{ r.event_date or '—' }}</td>
+          <td><span class="badge">{{ r.added_ago }}</span></td>
+          <td>{{ r.region or '—' }}</td>
+          <td>{{ r.product_name }}</td>
+          <td>{{ r.ticket_count or 1 }}</td>
+          <td>{{ r.email }}</td>
+          <td><span class="badge {% if r.status == 'confirmed' %}badge-success{% elif r.status == 'submitted_unconfirmed' %}badge-warning{% endif %}">{{ r.status }}</span></td>
+          <td>{{ r.confirmation_text or '—' }}</td>
+          <td><a href="{{ r.event_url }}" class="text-link">Open</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='table.js') }}"></script>
+<script>
+function parseLooseDate(text) {
+  if (!text) return null;
+  const raw = text.toLowerCase();
+  const months = {january:0,february:1,march:2,april:3,may:4,june:5,july:6,august:7,september:8,october:9,november:10,december:11,janvier:0,fevrier:1,février:1,mars:2,avril:3,mai:4,juin:5,juillet:6,aout:7,août:7,septembre:8,octobre:9,novembre:10,decembre:11,décembre:11};
+  const m = raw.match(/(\d{1,2}).*?(january|february|march|april|may|june|july|august|september|october|november|december|janvier|fevrier|février|mars|avril|mai|juin|juillet|aout|août|septembre|octobre|novembre|decembre|décembre).*?(20\d{2})/i)
+        || raw.match(/(january|february|march|april|may|june|july|august|september|october|november|december|janvier|fevrier|février|mars|avril|mai|juin|juillet|aout|août|septembre|octobre|novembre|decembre|décembre)\s+(\d{1,2}).*?(20\d{2})/i);
+  if (!m) return null;
+  let day, monthName, year;
+  if (/^\d/.test(m[1])) { day = parseInt(m[1], 10); monthName = m[2]; year = parseInt(m[3], 10); }
+  else { monthName = m[1]; day = parseInt(m[2], 10); year = parseInt(m[3], 10); }
+  const month = months[monthName];
+  if (month === undefined) return null;
+  return new Date(year, month, day);
+}
+function periodForDate(dt) {
+  if (!dt) return { key: 'unknown', label: 'Date unknown' };
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const eventDay = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+  const diffDays = Math.round((eventDay - today) / 86400000);
+  const day = today.getDay();
+  const mondayOffset = day === 0 ? -6 : 1 - day;
+  const startThisWeek = new Date(today); startThisWeek.setDate(today.getDate() + mondayOffset);
+  const endThisWeek = new Date(startThisWeek); endThisWeek.setDate(startThisWeek.getDate() + 6);
+  const startNextWeek = new Date(startThisWeek); startNextWeek.setDate(startThisWeek.getDate() + 7);
+  const endNextWeek = new Date(startNextWeek); endNextWeek.setDate(startNextWeek.getDate() + 6);
+  const endThisMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+  const startNextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+  const endNextMonth = new Date(today.getFullYear(), today.getMonth() + 2, 0);
+  if (diffDays < 0) return { key: 'past', label: 'Past' };
+  if (diffDays === 0) return { key: 'today', label: 'Today' };
+  if (eventDay >= startThisWeek && eventDay <= endThisWeek) return { key: 'this_week', label: 'This week' };
+  if (eventDay >= startNextWeek && eventDay <= endNextWeek) return { key: 'next_week', label: 'Next week' };
+  if (eventDay <= endThisMonth) return { key: 'this_month', label: 'This month' };
+  if (eventDay >= startNextMonth && eventDay <= endNextMonth) return { key: 'next_month', label: 'Next month' };
+  return { key: 'future', label: 'Upcoming' };
+}
+document.querySelectorAll('#tickets-table tbody tr').forEach((row) => {
+  const info = periodForDate(parseLooseDate(row.dataset.date || ''));
+  row.dataset.period = info.key;
+  const badge = row.querySelector('.js-period-badge');
+  if (badge) { badge.textContent = info.label; badge.style.display = ''; }
+});
+initDataTable('tickets-table', {
+  searchId: 'tickets-search',
+  resetId: 'tickets-reset',
+  filters: [
+    { id: 'tickets-region', dataset: 'region' },
+    { id: 'tickets-status', dataset: 'status' },
+    { id: 'tickets-period', dataset: 'period' }
+  ]
+});
+</script>
+{% endblock %}

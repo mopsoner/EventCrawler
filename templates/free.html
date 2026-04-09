@@ -58,7 +58,7 @@
             <button
               type="button"
               class="btn btn-secondary"
-              onclick="prepareBooking('{{ r.event_url|e }}', '{{ r.product_name|replace("'", "\\'") }}', 2, 'contact@sejourcarnaval.com')">
+              onclick="prepareBooking(this, '{{ r.event_url|e }}', '{{ r.product_name|replace("'", "\\'") }}', 2, 'contact@sejourcarnaval.com')">
               Préparer achat
             </button>
           </td>
@@ -137,9 +137,10 @@ initDataTable('free-table', {
   ]
 });
 
-async function prepareBooking(eventUrl, productName, ticketCount, email) {
-  const ok = window.confirm("Lancer la réservation automatique jusqu'à la confirmation finale ?");
-  if (!ok) return;
+async function prepareBooking(button, eventUrl, productName, ticketCount, email) {
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Lancement...';
   try {
     const res = await fetch('/booking/prepare', {
       method: 'POST',
@@ -152,17 +153,22 @@ async function prepareBooking(eventUrl, productName, ticketCount, email) {
       })
     });
     const data = await res.json();
-    if (!res.ok) {
-      alert(data.message || 'Erreur au lancement du flux');
+    if (!res.ok || data.status === 'error') {
+      button.textContent = 'Erreur';
       return;
     }
     if (data.status === 'busy') {
-      alert('Un autre flux de préparation est déjà en cours.');
+      button.textContent = 'Déjà en cours';
       return;
     }
-    alert('Réservation lancée en arrière-plan. Vérifiez le statut dans le tableau de bord.');
+    button.textContent = 'Lancé';
   } catch (err) {
-    alert('Erreur réseau pendant le lancement du flux.');
+    button.textContent = 'Erreur réseau';
+  } finally {
+    setTimeout(() => {
+      button.disabled = false;
+      button.textContent = originalText;
+    }, 2500);
   }
 }
 </script>
