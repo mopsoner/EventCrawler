@@ -323,28 +323,71 @@ def extract_contact_info(soup, lines):
     return {"contact_phone": contact_phone, "contact_email": contact_email, "contact_website": contact_website}
 
 def is_non_product_name(line):
-    low = (line or "").lower(); return any(x in low for x in ["total amount", "montant total", "tickets", "billets", "transportation", "pay with friends", "details", "sold out", "upcoming", "contact organizer", "view my itenary", "view my itinerary", "log in", "register now", "starting from"])
+    low = (line or "").lower()
+    return any(x in low for x in ["total amount", "montant total", "tickets", "billets", "transportation", "pay with friends", "details", "sold out", "upcoming", "contact organizer", "view my itenary", "view my itinerary", "log in", "register now", "starting from", "conditions", "cgv", "contact", "share", "location"])
+
+def normalize_product_key(text):
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+def product_name_score(name):
+    low = (name or "").lower()
+    score = 0
+    if 3 <= len(name or "") <= 80: score += 2
+    if any(k in low for k in ["entry", "ticket", "pass", "free", "single", "general", "admission", "prévente", "reservation", "réservation"]): score += 3
+    if any(k in low for k in ["total", "details", "contact", "share", "location", "description"]): score -= 3
+    return score
+
+def dedupe_products(products):
+    best = {}
+    for p in products:
+        norm_name = normalize_product_key(p.get("product_name"))
+        price = p.get("numeric_price")
+        key = (norm_name, price)
+        candidate_score = product_name_score(p.get("product_name"))
+        if key not in best or candidate_score > best[key][0] or (candidate_score == best[key][0] and len(p.get("product_name") or "") < len(best[key][1].get("product_name") or "")):
+            best[key] = (candidate_score, p)
+    return [item[1] for item in best.values()]
 
 def extract_products_from_dom(soup):
-    products = []; seen = set()
-    for div in soup.find_all(["div", "section", "article"]):
+    products = []
+    raw_seen = set()
+    for div in soup.find_all(["div", "section", "article", "li"]):
         text = normalize_text(div.get_text(" ", strip=True))
-        if not text or "€" not in text or len(text) > 2200: continue
+        if not text or "€" not in text or len(text) > 650:
+            continue
         lines = [normalize_text(x) for x in div.get_text("\n", strip=True).splitlines() if normalize_text(x)]
-        price_line = next((x for x in lines if parse_price(x) is not None and not is_non_product_name(x)), None)
-        if not price_line: continue
-        price = parse_price(price_line); name = None
-        for line in lines:
-            if line == price_line: break
-            if parse_price(line) is None and len(line) < 120 and not is_non_product_name(line): name = line; break
-        if not name: continue
-        blob = " ".join(lines).lower(); is_available = True
-        if any(w in blob for w in ["sold out", "épuisé", "indisponible", "complet"]): is_available = False
-        elif any(w in blob for w in ["upcoming", "à venir"]): is_available = None
-        key = (name, price_line)
-        if key in seen: continue
-        seen.add(key); products.append({"product_name": name, "price_text": price_line, "numeric_price": price, "is_free": price == 0.0, "is_available": is_available})
-    products.sort(key=lambda p: (not p["is_free"], p["numeric_price"] if p["numeric_price"] is not None else 999999)); return products
+        if not lines or len(lines) > 12:
+            continue
+        price_lines = [x for x in lines if parse_price(x) is not None and not is_non_product_name(x)]
+        if len(price_lines) != 1:
+            continue
+        price_line = price_lines[0]
+        price = parse_price(price_line)
+        price_idx = lines.index(price_line)
+        name = None
+        search_before = lines[max(0, price_idx - 3):price_idx]
+        for line in reversed(search_before):
+            if parse_price(line) is None and len(line) < 120 and not is_non_product_name(line):
+                name = line
+                break
+        if not name:
+            continue
+        if name.lower() == price_line.lower():
+            continue
+        blob = " ".join(lines).lower()
+        is_available = True
+        if any(w in blob for w in ["sold out", "épuisé", "indisponible", "complet"]):
+            is_available = False
+        elif any(w in blob for w in ["upcoming", "à venir"]):
+            is_available = None
+        key = (normalize_product_key(name), price_line)
+        if key in raw_seen:
+            continue
+        raw_seen.add(key)
+        products.append({"product_name": name, "price_text": price_line, "numeric_price": price, "is_free": price == 0.0, "is_available": is_available})
+    products = dedupe_products(products)
+    products.sort(key=lambda p: (not p["is_free"], p["numeric_price"] if p["numeric_price"] is not None else 999999, -(product_name_score(p.get("product_name")))))
+    return products
 
 def build_event_from_item(item, session=None):
     url = item["url"]; region = item["region"]; slug = item.get("slug"); external_id = item.get("external_id"); html = fetch_html(url, session=session); soup = remove_noise(BeautifulSoup(html, "html.parser")); lines = lines_from_soup(soup); header = extract_header_fields(soup); contact = extract_contact_info(soup, lines); products = extract_products_from_dom(soup); title = soup.title.get_text(" ", strip=True) if soup.title else url; name = header["name"] or normalize_text(title); image = extract_event_image(soup); description = extract_description(soup, lines)
