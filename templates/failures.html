@@ -1,0 +1,93 @@
+{% extends 'base.html' %}
+{% block title %}Failures · EventCrawler{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <div class="eyebrow">Auto-repair</div>
+    <h1>Booking failures</h1>
+    <p>Incidents de réservation détectés automatiquement, avec suggestions de sélecteurs et règles dynamiques.</p>
+  </div>
+</section>
+<section class="panel">
+  <div class="panel-header"><div><h2>Failures</h2></div></div>
+  <div class="toolbar">
+    <input id="fail-search" class="toolbar-input" type="text" placeholder="Rechercher un event, produit, étape…">
+    <select id="fail-status" class="toolbar-select">
+      <option value="">Tous les statuts</option>
+      {% for s in failures|map(attribute='status')|reject('equalto', None)|unique|list|sort %}
+      <option value="{{ s }}">{{ s }}</option>
+      {% endfor %}
+    </select>
+    <select id="fail-intent" class="toolbar-select">
+      <option value="">Tous les intents</option>
+      {% for s in failures|map(attribute='intent')|reject('equalto', None)|unique|list|sort %}
+      <option value="{{ s }}">{{ s }}</option>
+      {% endfor %}
+    </select>
+    <button id="fail-reset" class="btn btn-secondary" type="button">Reset</button>
+  </div>
+  <div class="table-wrap">
+    <table class="table" id="fail-table">
+      <thead><tr><th data-sort="event">Event</th><th data-sort="product">Product</th><th data-sort="step">Step</th><th data-sort="intent">Intent</th><th data-sort="status">Status</th><th>Suggestion</th><th data-sort="created">When</th></tr></thead>
+      <tbody>
+        {% for r in failures %}
+        <tr data-event="{{ (r.event_url or '')|lower }}" data-product="{{ (r.product_name or '')|lower }}" data-step="{{ (r.step_name or '')|lower }}" data-intent="{{ r.intent or '' }}" data-status="{{ r.status or '' }}" data-created="{{ r.created_at or '' }}">
+          <td><a href="{{ r.event_url }}">{{ r.event_url }}</a></td>
+          <td>{{ r.product_name or '—' }}</td>
+          <td>{{ r.step_name or '—' }}</td>
+          <td>{{ r.intent or '—' }}</td>
+          <td><span class="badge">{{ r.status }}</span></td>
+          <td>
+            {% if r.ai_suggestion and r.ai_suggestion.candidate_selectors %}
+              <div class="cell-sub">{{ r.ai_suggestion.reason or 'AI suggestion' }}</div>
+              <div class="cell-sub">{{ r.ai_suggestion.candidate_selectors|join(' • ') }}</div>
+            {% else %}
+              —
+            {% endif %}
+          </td>
+          <td>{{ r.created_ago }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+<section class="panel">
+  <div class="panel-header"><div><h2>Selector rules</h2></div></div>
+  <div class="table-wrap">
+    <table class="table" id="rules-table">
+      <thead><tr><th>Intent</th><th>Selectors</th><th>Source</th><th data-sort="confidence" data-type="number">Confidence</th><th>Status</th><th>Toggle</th></tr></thead>
+      <tbody>
+        {% for r in rules %}
+        <tr data-confidence="{{ r.confidence or 0 }}">
+          <td>{{ r.intent }}</td>
+          <td>{{ r.selectors|join(' • ') }}</td>
+          <td>{{ r.source }}</td>
+          <td>{{ r.confidence }}</td>
+          <td>{% if r.is_enabled %}<span class="badge badge-success">enabled</span>{% else %}<span class="badge badge-danger">disabled</span>{% endif %}</td>
+          <td>
+            <form method="post" action="/selector-rules/{{ r.id }}/toggle">
+              <button type="submit" class="btn btn-secondary">Toggle</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='table.js') }}"></script>
+<script>
+initDataTable('fail-table', {
+  searchId: 'fail-search',
+  resetId: 'fail-reset',
+  filters: [
+    { id: 'fail-status', dataset: 'status' },
+    { id: 'fail-intent', dataset: 'intent' }
+  ]
+});
+initDataTable('rules-table', {});
+</script>
+{% endblock %}
