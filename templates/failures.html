@@ -28,7 +28,7 @@
   </div>
   <div class="table-wrap">
     <table class="table" id="fail-table">
-      <thead><tr><th data-sort="event">Event</th><th data-sort="product">Product</th><th data-sort="step">Step</th><th data-sort="intent">Intent</th><th data-sort="status">Status</th><th>Suggestion</th><th data-sort="created">When</th></tr></thead>
+      <thead><tr><th data-sort="event">Event</th><th data-sort="product">Product</th><th data-sort="step">Step</th><th data-sort="intent">Intent</th><th data-sort="status">Status</th><th>Suggestion</th><th data-sort="created">When</th><th>Action</th></tr></thead>
       <tbody>
         {% for r in failures %}
         <tr data-event="{{ (r.event_url or '')|lower }}" data-product="{{ (r.product_name or '')|lower }}" data-step="{{ (r.step_name or '')|lower }}" data-intent="{{ r.intent or '' }}" data-status="{{ r.status or '' }}" data-created="{{ r.created_at or '' }}">
@@ -46,6 +46,11 @@
             {% endif %}
           </td>
           <td>{{ r.created_ago }}</td>
+          <td>
+            <form method="post" action="/failures/{{ r.id }}/reanalyze">
+              <button type="submit" class="btn btn-secondary">Reanalyze</button>
+            </form>
+          </td>
         </tr>
         {% endfor %}
       </tbody>
@@ -56,14 +61,19 @@
   <div class="panel-header"><div><h2>Selector rules</h2></div></div>
   <div class="table-wrap">
     <table class="table" id="rules-table">
-      <thead><tr><th>Intent</th><th>Selectors</th><th>Source</th><th data-sort="confidence" data-type="number">Confidence</th><th>Status</th><th>Toggle</th></tr></thead>
+      <thead><tr><th>Intent</th><th>Selectors</th><th>Source</th><th data-sort="confidence" data-type="number">Confidence</th><th data-sort="successes" data-type="number">Success</th><th data-sort="failures" data-type="number">Failures</th><th>Status</th><th>Toggle</th></tr></thead>
       <tbody>
         {% for r in rules %}
-        <tr data-confidence="{{ r.confidence or 0 }}">
-          <td>{{ r.intent }}</td>
+        <tr data-confidence="{{ r.confidence or 0 }}" data-successes="{{ r.success_count or 0 }}" data-failures="{{ r.failures_for_intent or r.failure_count or 0 }}">
+          <td>
+            {{ r.intent }}
+            <div class="cell-sub">{{ r.selectors_count }} selector(s)</div>
+          </td>
           <td>{{ r.selectors|join(' • ') }}</td>
           <td>{{ r.source }}</td>
           <td>{{ r.confidence }}</td>
+          <td>{{ r.success_count or 0 }}</td>
+          <td>{{ r.failures_for_intent or r.failure_count or 0 }}</td>
           <td>{% if r.is_enabled %}<span class="badge badge-success">enabled</span>{% else %}<span class="badge badge-danger">disabled</span>{% endif %}</td>
           <td>
             <form method="post" action="/selector-rules/{{ r.id }}/toggle">
