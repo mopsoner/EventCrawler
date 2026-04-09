@@ -19,6 +19,7 @@
     </div>
     <div class="actions-row">
       <form method="post" action="/event/{{ event.id }}/watchlist"><button class="btn btn-secondary" type="submit">{% if event.is_watchlisted %}Remove watchlist{% else %}Add to watchlist{% endif %}</button></form>
+      <form method="post" action="/event/{{ event.id }}/refresh-ai"><button class="btn btn-secondary" type="submit">Refresh AI labels</button></form>
       <a class="btn btn-secondary" target="_blank" href="https://calendar.google.com/calendar/render?action=TEMPLATE&text={{ (event.name or 'Event')|urlencode }}&details={{ (((event.description or event.subtitle) or '') ~ ' ' ~ (event.event_url or ''))|urlencode }}&location={{ ((event.address or '') ~ ' ' ~ (event.city or ''))|urlencode }}">Google Calendar</a>
     </div>
   </section>
@@ -28,6 +29,22 @@
   <div class="panel-header"><div><h2>Description</h2><p>Description détectée depuis la page événement.</p></div></div>
   <div class="field-help">{{ event.description or '—' }}</div>
 </section>
+{% if event.ai_labels %}
+<section class="panel">
+  <div class="panel-header"><div><h2>AI enrichment</h2><p>Résumé et tags générés automatiquement.</p></div></div>
+  <div class="detail-meta-grid">
+    <div><span class="meta-label">Language</span><div>{{ event.ai_labels.language or '—' }}</div></div>
+    <div><span class="meta-label">Event type</span><div>{{ event.ai_labels.event_type or '—' }}</div></div>
+    <div><span class="meta-label">Confidence</span><div>{{ event.ai_labels.confidence or '—' }}</div></div>
+    <div><span class="meta-label">Updated</span><div>{{ event.ai_labels.updated_at or '—' }}</div></div>
+  </div>
+  <div class="field-help" style="margin-top:12px;">{{ event.ai_labels.summary_short or '—' }}</div>
+  <div class="actions-row wrap" style="margin-top:12px;">
+    {% for g in event.ai_labels.genres %}<span class="badge badge-info">{{ g }}</span>{% endfor %}
+    {% for t in event.ai_labels.audience_tags %}<span class="badge">{{ t }}</span>{% endfor %}
+  </div>
+</section>
+{% endif %}
 <section class="panel panel-form">
   <div class="panel-header"><div><h2>Private tracking</h2><p>Statut manuel et notes privées.</p></div></div>
   <form method="post" action="/event/{{ event.id }}/notes">
