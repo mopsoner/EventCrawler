@@ -10,6 +10,15 @@ DEFAULT_CONFIG = {
     "region_scan_frequency_minutes": 60,
     "free_product_refresh_frequency_hours": 24,
     "user_agent": "Mozilla/5.0",
+    "booking_profile": {
+        "first_name": "Olivier",
+        "last_name": "Mops",
+        "full_name": "Olivier Mops",
+        "phone": "0691243236",
+        "gender": "Homme",
+        "email": "contact@sejourcarnaval.com",
+        "default_ticket_count": 2,
+    },
     "regions": {
         "london": {"enabled": True, "url": "https://www.bizouk.com/?region=london"},
         "guadeloupe": {"enabled": True, "url": "https://www.bizouk.com/?region=guadeloupe"},
@@ -43,6 +52,28 @@ def _normalized_regions(regions_data: dict, fallback_to_defaults: bool) -> dict:
     return clean_regions
 
 
+def _normalized_booking_profile(data: dict) -> dict:
+    base = dict(DEFAULT_CONFIG["booking_profile"])
+    if isinstance(data, dict):
+        for key in base.keys():
+            if key in data:
+                base[key] = data[key]
+    base["first_name"] = str(base.get("first_name") or "Olivier").strip() or "Olivier"
+    base["last_name"] = str(base.get("last_name") or "Mops").strip() or "Mops"
+    full_name = str(base.get("full_name") or "").strip()
+    if not full_name:
+        full_name = f"{base['first_name']} {base['last_name']}".strip()
+    base["full_name"] = full_name
+    base["phone"] = str(base.get("phone") or "0691243236").strip() or "0691243236"
+    base["gender"] = str(base.get("gender") or "Homme").strip() or "Homme"
+    base["email"] = str(base.get("email") or "contact@sejourcarnaval.com").strip() or "contact@sejourcarnaval.com"
+    try:
+        base["default_ticket_count"] = max(1, min(20, int(base.get("default_ticket_count", 2))))
+    except Exception:
+        base["default_ticket_count"] = 2
+    return base
+
+
 def _merge_defaults(data: dict) -> dict:
     merged = {
         "max_workers": DEFAULT_CONFIG["max_workers"],
@@ -50,10 +81,12 @@ def _merge_defaults(data: dict) -> dict:
         "region_scan_frequency_minutes": DEFAULT_CONFIG["region_scan_frequency_minutes"],
         "free_product_refresh_frequency_hours": DEFAULT_CONFIG["free_product_refresh_frequency_hours"],
         "user_agent": DEFAULT_CONFIG["user_agent"],
+        "booking_profile": dict(DEFAULT_CONFIG["booking_profile"]),
         "regions": {},
     }
     if not isinstance(data, dict):
         merged["regions"] = _normalized_regions({}, True)
+        merged["booking_profile"] = _normalized_booking_profile({})
         return merged
     for key in (
         "max_workers",
@@ -64,6 +97,7 @@ def _merge_defaults(data: dict) -> dict:
     ):
         if key in data:
             merged[key] = data[key]
+    merged["booking_profile"] = _normalized_booking_profile(data.get("booking_profile"))
     has_regions_key = "regions" in data
     merged["regions"] = _normalized_regions(data.get("regions"), fallback_to_defaults=not has_regions_key)
     return merged
@@ -103,6 +137,7 @@ def save_config(data: dict) -> dict:
     except Exception:
         merged["free_product_refresh_frequency_hours"] = 24
     merged["user_agent"] = str(merged.get("user_agent") or "Mozilla/5.0").strip() or "Mozilla/5.0"
+    merged["booking_profile"] = _normalized_booking_profile(merged.get("booking_profile"))
     merged["regions"] = _normalized_regions(merged.get("regions"), fallback_to_defaults=False)
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")

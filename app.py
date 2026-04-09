@@ -242,8 +242,7 @@ def sync_ticket_from_booking_state(state=None):
 
 def read_booking_state(raw=False):
     if not BOOKING_STATE_PATH.exists():
-        state = default_booking_state()
-        return state
+        return default_booking_state()
     try:
         data = json.loads(BOOKING_STATE_PATH.read_text(encoding="utf-8"))
     except Exception:
@@ -265,11 +264,18 @@ def launch_booking_prepare(event_url: str, ticket_count: int, email: str, produc
     with BOOKING_LOCK:
         if BOOKING_PROCESS and BOOKING_PROCESS.poll() is None:
             return False
+        cfg = load_config()
+        profile = cfg.get("booking_profile", {})
         log_path = Path("data/booking_runner.log")
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_file = open(log_path, "a", encoding="utf-8")
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        env["BOOKING_FIRST_NAME"] = str(profile.get("first_name") or "Olivier")
+        env["BOOKING_LAST_NAME"] = str(profile.get("last_name") or "Mops")
+        env["BOOKING_FULL_NAME"] = str(profile.get("full_name") or f"{profile.get('first_name','Olivier')} {profile.get('last_name','Mops')}")
+        env["BOOKING_PHONE"] = str(profile.get("phone") or "0691243236")
+        env["BOOKING_GENDER"] = str(profile.get("gender") or "Homme")
         BOOKING_PROCESS = subprocess.Popen([
             "node",
             str(BOOKING_SCRIPT_PATH),
@@ -430,9 +436,9 @@ def has_column(table, column):
 
 def decorate_rows(rows):
     for row in rows:
-        row["added_at"] = row.get("first_seen_at") or row.get("event_first_seen") or row.get("booked_at")
-        row["added_ago"] = time_ago(row.get("added_at"))
-        row["is_watchlisted"] = bool(row.get("is_watchlisted", 0))
+      row["added_at"] = row.get("first_seen_at") or row.get("event_first_seen") or row.get("booked_at")
+      row["added_ago"] = time_ago(row.get("added_at"))
+      row["is_watchlisted"] = bool(row.get("is_watchlisted", 0))
     return rows
 
 
@@ -665,13 +671,15 @@ def stop_crawl_now():
 @app.route("/booking/prepare", methods=["POST"])
 def booking_prepare():
     data = request.get_json(silent=True) or request.form
+    cfg = load_config()
+    profile = cfg.get("booking_profile", {})
     event_url = (data.get("event_url") or "").strip()
     product_name = (data.get("product_name") or "").strip()
-    email = (data.get("email") or "").strip() or "contact@sejourcarnaval.com"
+    email = (data.get("email") or profile.get("email") or "contact@sejourcarnaval.com").strip()
     try:
-        ticket_count = max(1, int(data.get("ticket_count", 2)))
+        ticket_count = max(1, int(data.get("ticket_count", profile.get("default_ticket_count", 2))))
     except Exception:
-        ticket_count = 2
+        ticket_count = int(profile.get("default_ticket_count", 2) or 2)
     if not event_url or not product_name:
         return jsonify({"status": "error", "message": "missing event_url or product_name"}), 400
     started = launch_booking_prepare(event_url, ticket_count, email, product_name)
@@ -802,6 +810,15 @@ def config_page():
             "region_scan_frequency_minutes": request.form.get("region_scan_frequency_minutes", current.get("region_scan_frequency_minutes", 60)),
             "free_product_refresh_frequency_hours": request.form.get("free_product_refresh_frequency_hours", current.get("free_product_refresh_frequency_hours", 24)),
             "user_agent": request.form.get("user_agent", current["user_agent"]),
+            "booking_profile": {
+                "first_name": request.form.get("booking_first_name", current.get("booking_profile", {}).get("first_name", "Olivier")),
+                "last_name": request.form.get("booking_last_name", current.get("booking_profile", {}).get("last_name", "Mops")),
+                "full_name": request.form.get("booking_full_name", current.get("booking_profile", {}).get("full_name", "Olivier Mops")),
+                "phone": request.form.get("booking_phone", current.get("booking_profile", {}).get("phone", "0691243236")),
+                "gender": request.form.get("booking_gender", current.get("booking_profile", {}).get("gender", "Homme")),
+                "email": request.form.get("booking_email", current.get("booking_profile", {}).get("email", "contact@sejourcarnaval.com")),
+                "default_ticket_count": request.form.get("booking_default_ticket_count", current.get("booking_profile", {}).get("default_ticket_count", 2)),
+            },
             "regions": regions,
         }
         save_config(new_config)

@@ -5,7 +5,7 @@
   <div>
     <div class="eyebrow">Settings</div>
     <h1>Configuration</h1>
-    <p>Règle le crawler, les fréquences de boucle et pilote les cron directement depuis l’admin.</p>
+    <p>Règle le crawler, les fréquences de boucle, le profil de réservation et pilote les cron directement depuis l’admin.</p>
   </div>
 </section>
 <section class="panel">
@@ -59,6 +59,46 @@
       <span>User-Agent</span>
       <input type="text" name="user_agent" value="{{ config.user_agent }}">
     </label>
+
+    <section class="panel" style="margin-top:18px;">
+      <div class="panel-header">
+        <div>
+          <h2>Booking profile</h2>
+          <p>Informations utilisateur utilisées par le flux de réservation automatique.</p>
+        </div>
+      </div>
+      <div class="form-grid">
+        <label class="field">
+          <span>Prénom</span>
+          <input type="text" name="booking_first_name" value="{{ config.booking_profile.first_name }}">
+        </label>
+        <label class="field">
+          <span>Nom</span>
+          <input type="text" name="booking_last_name" value="{{ config.booking_profile.last_name }}">
+        </label>
+        <label class="field">
+          <span>Nom complet</span>
+          <input type="text" name="booking_full_name" value="{{ config.booking_profile.full_name }}">
+        </label>
+        <label class="field">
+          <span>Téléphone</span>
+          <input type="text" name="booking_phone" value="{{ config.booking_profile.phone }}">
+        </label>
+        <label class="field">
+          <span>Email par défaut</span>
+          <input type="email" name="booking_email" value="{{ config.booking_profile.email }}">
+        </label>
+        <label class="field">
+          <span>Genre / Civilité</span>
+          <input type="text" name="booking_gender" value="{{ config.booking_profile.gender }}">
+        </label>
+        <label class="field">
+          <span>Nombre de tickets par défaut</span>
+          <input type="number" name="booking_default_ticket_count" min="1" max="20" value="{{ config.booking_profile.default_ticket_count }}">
+        </label>
+      </div>
+    </section>
+
     <div class="region-stack">
       {% for name, region in config.regions.items() %}
       <input type="hidden" name="region_names" value="{{ name }}">
