@@ -1,0 +1,34 @@
+{
+  "max_workers": 6,
+  "request_timeout": 45,
+  "region_scan_frequency_minutes": 60,
+  "free_product_refresh_frequency_hours": 24,
+  "user_agent": "Mozilla/5.0",
+  "booking_profile": {
+    "first_name": "Olivier",
+    "last_name": "Mops",
+    "full_name": "Olivier Mops",
+    "phone": "0691243236",
+    "gender": "Homme",
+    "email": "contact@sejourcarnaval.com",
+    "default_ticket_count": 2
+  },
+  "regions": {
+    "london": {
+      "enabled": true,
+      "url": "https://www.bizouk.com/?region=london"
+    },
+    "guadeloupe": {
+      "enabled": true,
+      "url": "https://www.bizouk.com/?region=guadeloupe"
+    },
+    "paris": {
+      "enabled": true,
+      "url": "https://www.bizouk.com/?region=paris"
+    },
+    "rotterdam": {
+      "enabled": true,
+      "url": "https://www.bizouk.com/?region=rotterdam"
+    }
+  }
+}
