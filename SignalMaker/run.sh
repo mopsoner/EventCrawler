@@ -3,12 +3,15 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 if [ ! -d ".venv" ]; then
-  python3 -m venv .venv
+  python3 -m venv .venv --system-site-packages
 fi
 
 source .venv/bin/activate
-pip install -q --upgrade pip
-pip install -q -r requirements.txt
+.venv/bin/pip install -q -r requirements.txt
+
+if [ -n "${PGHOST:-}" ] && [ -n "${PGUSER:-}" ] && [ -n "${PGPASSWORD:-}" ] && [ -n "${PGDATABASE:-}" ]; then
+  export DATABASE_URL="postgresql+psycopg://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT:-5432}/${PGDATABASE}?sslmode=disable"
+fi
 
 MODE="${1:-api}"
 

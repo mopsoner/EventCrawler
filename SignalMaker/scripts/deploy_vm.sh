@@ -14,14 +14,18 @@ if [ ! -f ".env" ] && [ -f ".env.example" ]; then
 fi
 
 if [ ! -d ".venv" ]; then
-  python3 -m venv .venv
+  python3 -m venv .venv --system-site-packages
 fi
 
 source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+.venv/bin/pip install -q -r requirements.txt
 
 mkdir -p logs data
+
+if [ -n "${PGHOST:-}" ] && [ -n "${PGUSER:-}" ] && [ -n "${PGPASSWORD:-}" ] && [ -n "${PGDATABASE:-}" ]; then
+  export DATABASE_URL="postgresql+psycopg://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT:-5432}/${PGDATABASE}?sslmode=disable"
+fi
+
 python -m scripts.init_db
 
 echo "SignalMaker VM deploy complete"

@@ -38,13 +38,13 @@ waitForPort = 5000
 name = "SignalMaker API"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "bash SignalMaker/start.sh"
-waitForPort = 8080
-
 [workflows.workflow.metadata]
 outputType = "console"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "bash SignalMaker/run.sh api"
+waitForPort = 8080
 
 [[ports]]
 localPort = 5000
