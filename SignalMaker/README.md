@@ -69,6 +69,12 @@ Then edit the database URL and runtime values.
 ## systemd templates
 Templates are available in `deploy/systemd/`.
 
+## Replit PostgreSQL setup
+When running on Replit with the PostgreSQL integration enabled, `DATABASE_URL` is automatically
+derived at runtime from `PGHOST`, `PGUSER`, `PGPASSWORD`, `PGPORT`, and `PGDATABASE` env vars
+(injected by Replit). The `.env` `DATABASE_URL` value serves as a fallback template only.
+SSL mode defaults to `disable` but can be overridden via the `PGSSLMODE` env var.
+
 ## Notes
 - This is now a functional scaffold, not a finished production trading system.
 - It still needs hardening for real live trading: risk engine, exchange auth, order reconciliation, stop/TP sync, worker supervision, retries, and UI migration.
