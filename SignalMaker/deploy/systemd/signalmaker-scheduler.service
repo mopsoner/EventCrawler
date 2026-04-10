@@ -1,0 +1,13 @@
+[Unit]
+Description=SignalMaker Scheduler Worker
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/signalmaker
+ExecStart=/bin/bash /opt/signalmaker/scripts/start_scheduler_worker.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
