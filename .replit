@@ -1,4 +1,4 @@
-modules = ["python-3.12", "web", "nodejs-20", "bash"]
+modules = ["python-3.12", "web", "nodejs-20", "bash", "nix"]
 [agent]
 expertMode = true
 integrations = ["python_database:1.0.0"]
@@ -27,7 +27,7 @@ outputType = "webview"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "LD_LIBRARY_PATH=/nix/store/wilz94hzz4q3fss6qvv625zvww4a6s4s-mesa-libgbm-25.0.1/lib:/nix/store/fghm12jhpx45db2zd6g3dra07m16lnn7-eudev-3.2.14/lib:$LD_LIBRARY_PATH python app.py"
+args = "cd EventCrawler && python app.py"
 waitForPort = 5000
 
 [[ports]]
