@@ -4,11 +4,13 @@ set -eux
 python3 -m venv .venv
 . .venv/bin/activate
 
-python -m pip install --upgrade pip
-pip install -r EventCrawler/requirements.txt
+PIP_USER=0 python -m pip install --upgrade pip
+PIP_USER=0 pip install -r EventCrawler/requirements.txt
 
+cd EventCrawler
 npm install
 npx playwright install chromium
+cd ..
 
 mkdir -p EventCrawler/data
 

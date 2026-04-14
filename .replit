@@ -27,7 +27,7 @@ outputType = "webview"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "cd EventCrawler && python app.py"
+args = "bash replit-run.sh"
 waitForPort = 5000
 
 [[ports]]
