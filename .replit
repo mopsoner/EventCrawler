@@ -35,5 +35,6 @@ localPort = 5000
 externalPort = 80
 
 [deployment]
-deploymentTarget = "vm"
-run = ["gunicorn", "--bind=0.0.0.0:5000", "--reuse-port", "--workers=1", "app:app"]
+deploymentTarget = "cloudrun"
+run = ["sh", "-c", "bash replit-run.sh"]
+build = ["sh", "-c", "bash replit-build.sh"]
