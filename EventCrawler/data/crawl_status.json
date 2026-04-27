@@ -1,12 +1,12 @@
 {
-  "running": false,
+  "running": true,
   "regions": [
     "guadeloupe",
     "paris"
   ],
   "max_workers": 6,
   "request_timeout": 45,
-  "started_at": null,
-  "finished_at": "2026-04-14T19:47:54.453463",
-  "last_error": "database is locked"
+  "started_at": "2026-04-27T16:30:14.261985",
+  "finished_at": null,
+  "last_error": null
 }
