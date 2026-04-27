@@ -2,5 +2,8 @@
   "name": "eventcrawler-root",
   "version": "1.0.0",
   "private": true,
-  "description": "Root package.json — actual Node dependencies are in EventCrawler/"
+  "description": "Root package.json — actual Node dependencies are in EventCrawler/",
+  "dependencies": {
+    "playwright": "^1.59.1"
+  }
 }
