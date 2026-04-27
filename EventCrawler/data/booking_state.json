@@ -1,15 +1,15 @@
 {
-  "running": true,
-  "status": "running",
+  "running": false,
+  "status": "confirmed",
   "mode": "auto_confirm",
-  "event_url": "https://www.bizouk.com/events/details/caribbean-bastille/119652",
-  "product_name": "Invitation",
+  "event_url": "https://www.bizouk.com/events/details/st-kitts-festival-2026/119698",
+  "product_name": "Pre-registration",
   "ticket_count": 2,
   "email": "contact@sejourcarnaval.com",
-  "started_at": "2026-04-27T16:45:17.101Z",
-  "finished_at": null,
+  "started_at": "2026-04-27T16:51:50.416Z",
+  "finished_at": "2026-04-27T16:52:17.356Z",
   "last_error": null,
   "log_path": "/home/runner/workspace/data/booking.log",
-  "confirmation_text": null,
+  "confirmation_text": "Confirmed (URL: https://www.bizouk.com/stores/reservation/confirmation | Title: Bizouk.com - Billetterie - Confirmation de paiement)",
   "final_step_ready": true
 }
