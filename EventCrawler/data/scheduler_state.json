@@ -1,7 +1,7 @@
 {
   "enabled": true,
   "last_region_scan_at": "2026-04-30T22:16:42.707310",
-  "last_free_refresh_at": "2026-04-28T23:00:17.298130",
-  "current_job": "region_scan",
-  "updated_at": "2026-04-30T22:16:42.707390"
+  "last_free_refresh_at": "2026-04-30T22:18:12.709900",
+  "current_job": "free_refresh",
+  "updated_at": "2026-04-30T22:18:12.709981"
 }
