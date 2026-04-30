@@ -112,16 +112,6 @@ async function main() {
   });
 
   child.on('exit', (code) => {
-    if (source === 'kiwol' && code === 0) {
-      writeState({
-        running: false,
-        status: 'not_implemented',
-        finished_at: new Date().toISOString(),
-        last_error: 'Kiwol Playwright reservation script is intentionally empty for now.',
-        confirmation_text: null,
-      });
-      logLine('Kiwol routing completed: placeholder script exists but reservation flow is not implemented yet.');
-    }
     process.exit(code || 0);
   });
 
