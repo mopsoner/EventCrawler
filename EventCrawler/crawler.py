@@ -5,7 +5,7 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -14,8 +14,12 @@ from ai_automation import enrich_event_labels
 from config_store import load_config
 
 DB_PATH = "data/eventcrawler.sqlite"
-BASE_URL = "https://www.bizouk.com"
-EVENT_URL_RE = re.compile(r"/events/details/([^/]+)/(?P<id>\d+)")
+BIZOUK_BASE_URL = "https://www.bizouk.com"
+KIWOL_BASE_URL = "https://www.kiwol.com"
+BASE_URL = BIZOUK_BASE_URL
+BIZOUK_EVENT_URL_RE = re.compile(r"/events/details/([^/]+)/(?P<id>\d+)")
+KIWOL_EVENT_URL_RE = re.compile(r"/billetterie/(?P<id>\d+)")
+EVENT_URL_RE = BIZOUK_EVENT_URL_RE
 URL_RE = re.compile(r"https?://[^\s]+", re.I)
 STATUS_PATH = Path("data/crawl_status.json")
 CONFIG = load_config()
@@ -189,12 +193,36 @@ def normalize_text(text): return re.sub(r"\s+", " ", (text or "").strip())
 
 def digits_only_count(text): return len(re.sub(r"\D", "", text or ""))
 
+
+def detect_source(url):
+    host = (urlparse(url or "").netloc or "").lower()
+    if "kiwol.com" in host:
+        return "kiwol"
+    return "bizouk"
+
+
+def source_base_url(source):
+    return KIWOL_BASE_URL if source == "kiwol" else BIZOUK_BASE_URL
+
+
 def parse_price(text):
-    if not text: return None
-    t = text.strip().lower().replace(",", ".")
+    if text is None: return None
+    if isinstance(text, (int, float)): return float(text)
+    t = str(text).strip().lower().replace(",", ".")
     if "gratuit" in t or "free" in t: return 0.0
-    m = re.search(r"(\d+(?:\.\d+)?)\s*€", t)
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(?:€|eur|euro)?", t)
     return float(m.group(1)) if m else None
+
+
+def price_text_from_value(value, currency="EUR"):
+    price = parse_price(value)
+    if price is None:
+        return normalize_text(str(value or "")) or None
+    suffix = "€" if str(currency or "").upper() == "EUR" else str(currency or "").upper()
+    if price == 0: return f"0 {suffix}".strip()
+    if float(price).is_integer(): return f"{int(price)} {suffix}".strip()
+    return f"{price:.2f} {suffix}".strip()
+
 
 def extract_email(text):
     m = re.search(r"([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})", text or "", re.I)
@@ -209,17 +237,17 @@ def extract_phone(text):
 def extract_website(text):
     for url in URL_RE.findall(text or ""):
         cleaned = url.rstrip(').,;]')
-        if "bizouk.com" not in cleaned.lower(): return cleaned
+        if "bizouk.com" not in cleaned.lower() and "kiwol.com" not in cleaned.lower(): return cleaned
     return None
 
-def extract_event_image(soup):
+def extract_event_image(soup, base_url=BASE_URL):
     meta = soup.find("meta", attrs={"property": "og:image"})
-    if meta and meta.get("content"): return urljoin(BASE_URL, meta.get("content"))
+    if meta and meta.get("content"): return urljoin(base_url, meta.get("content"))
     for img in soup.find_all("img"):
         src = img.get("src") or ""
         if not src: continue
-        full = urljoin(BASE_URL, src); low = full.lower()
-        if any(k in low for k in ["flyer", "affiche", "uploads", "/img/"]): return full
+        full = urljoin(base_url, src); low = full.lower()
+        if any(k in low for k in ["flyer", "affiche", "uploads", "/img/", "cloudfront", "thumbnail"]): return full
     return None
 
 def extract_description(soup, lines):
@@ -229,7 +257,7 @@ def extract_description(soup, lines):
             block = []
             for nxt in lines[i + 1:i + 30]:
                 nxt_low = nxt.lower()
-                if nxt_low in {"contact", "tickets", "produits", "products", "location", "lieu"}: break
+                if nxt_low in {"contact", "tickets", "billets", "produits", "products", "location", "lieu", "organisateur"}: break
                 if len(nxt) > 2: block.append(nxt)
             text = normalize_text(" ".join(block))
             if len(text) >= 30: return text[:4000]
@@ -242,7 +270,7 @@ def extract_description(soup, lines):
 def score_event(name, region, products, contact, has_image, event_date):
     score = 0; low = (name or "").lower()
     if any(k in low for k in ["carnaval", "carnival", "jouvert", "boat", "pre-registration", "pré-inscription", "dreamland"]): score += 30
-    if region in {"london", "rotterdam", "paris"}: score += 15
+    if region in {"london", "rotterdam", "paris", "guadeloupe", "kiwol_guadeloupe"}: score += 15
     if any(p.get("is_free") for p in products): score += 15
     if any(p.get("is_free") and p.get("is_available") is True for p in products): score += 25
     if contact.get("contact_phone") or contact.get("contact_email") or contact.get("contact_website"): score += 10
@@ -253,17 +281,39 @@ def score_event(name, region, products, contact, has_image, event_date):
 def fetch_html(url, session=None):
     client = session or requests; r = client.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT); r.raise_for_status(); return r.text
 
-def parse_event_ref(href):
-    m = EVENT_URL_RE.search(href or "")
+def parse_event_ref(href, source=None):
+    source = source or detect_source(href)
+    if source == "kiwol":
+        m = KIWOL_EVENT_URL_RE.search(href or "")
+        if not m: return None
+        return {"slug": f"kiwol-{m.group('id')}", "external_id": m.group("id"), "source": "kiwol"}
+    m = BIZOUK_EVENT_URL_RE.search(href or "")
     if not m: return None
-    return {"slug": m.group(1), "external_id": m.group("id")}
+    return {"slug": m.group(1), "external_id": m.group("id"), "source": "bizouk"}
 
-def extract_event_links(html):
+def extract_event_links(html, start_url=None):
+    source = detect_source(start_url or "")
+    base_url = source_base_url(source)
     soup = BeautifulSoup(html, "html.parser"); out = {}
+    if source == "kiwol":
+        selectors = "a.ticketing-card-search-container[href], a[href*='/billetterie/']"
+        for a in soup.select(selectors):
+            href = a.get("href") or ""
+            if "/billetterie/" not in href: continue
+            full = urljoin(base_url, href); ref = parse_event_ref(full, source="kiwol")
+            if not ref: continue
+            title_el = a.select_one(".ticketing-card-title")
+            date_el = a.select_one(".ticketing-card-date")
+            location_el = a.select_one(".ticketing-card-location")
+            title = normalize_text(title_el.get_text(" ", strip=True)) if title_el else None
+            date_text = normalize_text(date_el.get_text(" ", strip=True)) if date_el else None
+            location_text = normalize_text(location_el.get_text(" ", strip=True)) if location_el else None
+            out[ref["external_id"]] = {"url": full, **ref, "list_title": title, "list_date": date_text, "list_location": location_text}
+        return list(out.values())
     for a in soup.select("a[href]"):
         href = a.get("href") or ""
         if "/events/details/" not in href: continue
-        full = urljoin(BASE_URL, href); ref = parse_event_ref(full)
+        full = urljoin(base_url, href); ref = parse_event_ref(full, source="bizouk")
         if not ref: continue
         out[ref["external_id"]] = {"url": full, **ref}
     return list(out.values())
@@ -333,7 +383,7 @@ def product_name_score(name):
     low = (name or "").lower()
     score = 0
     if 3 <= len(name or "") <= 80: score += 2
-    if any(k in low for k in ["entry", "ticket", "pass", "free", "single", "general", "admission", "prévente", "reservation", "réservation"]): score += 3
+    if any(k in low for k in ["entry", "ticket", "billet", "pass", "free", "gratuit", "single", "general", "admission", "prévente", "reservation", "réservation"]): score += 3
     if any(k in low for k in ["total", "details", "contact", "share", "location", "description"]): score -= 3
     return score
 
@@ -389,8 +439,112 @@ def extract_products_from_dom(soup):
     products.sort(key=lambda p: (not p["is_free"], p["numeric_price"] if p["numeric_price"] is not None else 999999, -(product_name_score(p.get("product_name")))))
     return products
 
+
+def extract_jsonld_event(soup):
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        text = script.get_text(strip=True)
+        if not text: continue
+        try:
+            data = json.loads(text)
+        except Exception:
+            continue
+        candidates = data if isinstance(data, list) else [data]
+        for item in candidates:
+            if isinstance(item, dict) and item.get("@type") == "Event":
+                return item
+    return None
+
+
+def format_kiwol_event_date(json_event, fallback=None):
+    if not json_event:
+        return fallback
+    schedule = json_event.get("eventSchedule") or {}
+    start_date = schedule.get("startDate") or json_event.get("startDate")
+    end_date = schedule.get("endDate") or json_event.get("endDate")
+    start_time = schedule.get("startTime")
+    end_time = schedule.get("endTime")
+    parts = []
+    if start_date: parts.append(str(start_date))
+    if end_date and end_date != start_date: parts.append(f"au {end_date}")
+    if start_time:
+        time_part = str(start_time)[:5]
+        if end_time: time_part += f"-{str(end_time)[:5]}"
+        parts.append(time_part)
+    return " ".join(parts) or fallback
+
+
+def offers_to_list(offers):
+    if not offers: return []
+    if isinstance(offers, list): return offers
+    nested = offers.get("offers") if isinstance(offers, dict) else None
+    if isinstance(nested, list): return nested
+    if isinstance(offers, dict) and offers.get("@type") == "Offer": return [offers]
+    return []
+
+
+def extract_kiwol_products_from_jsonld(json_event):
+    products = []
+    aggregate = json_event.get("offers") if isinstance(json_event, dict) else None
+    default_currency = aggregate.get("priceCurrency") if isinstance(aggregate, dict) else "EUR"
+    for offer in offers_to_list(aggregate):
+        if not isinstance(offer, dict):
+            continue
+        currency = offer.get("priceCurrency") or default_currency or "EUR"
+        price = parse_price(offer.get("price"))
+        price_text = price_text_from_value(offer.get("price"), currency)
+        availability = str(offer.get("availability") or "").lower()
+        is_available = None
+        if availability:
+            is_available = "instock" in availability or "in_stock" in availability
+            if any(k in availability for k in ["soldout", "outofstock", "discontinued"]):
+                is_available = False
+        product_name = normalize_text(offer.get("name")) or "Billet"
+        is_free = price == 0.0 or "free" in product_name.lower() or "gratuit" in product_name.lower()
+        products.append({
+            "product_name": product_name,
+            "price_text": price_text,
+            "numeric_price": price,
+            "is_free": is_free,
+            "is_available": is_available if is_available is not None else True,
+        })
+    return dedupe_products(products)
+
+
+def build_kiwol_event_from_item(item, session=None):
+    url = item["url"]; region = item["region"]; slug = item.get("slug"); external_id = item.get("external_id")
+    html = fetch_html(url, session=session)
+    raw_soup = BeautifulSoup(html, "html.parser")
+    json_event = extract_jsonld_event(raw_soup)
+    soup = remove_noise(raw_soup)
+    lines = lines_from_soup(soup)
+    h1 = soup.find("h1")
+    name = normalize_text(h1.get_text(" ", strip=True)) if h1 else None
+    if not name and json_event:
+        name = normalize_text(str(json_event.get("name") or "").replace("| Kiwol", ""))
+    description = normalize_text(json_event.get("description"))[:4000] if json_event and json_event.get("description") else extract_description(soup, lines)
+    location = json_event.get("location") if isinstance(json_event, dict) else {}
+    address_data = location.get("address") if isinstance(location, dict) else {}
+    venue_name = normalize_text(location.get("name")) if isinstance(location, dict) else None
+    street = normalize_text(address_data.get("streetAddress")) if isinstance(address_data, dict) else None
+    city = normalize_text(address_data.get("addressLocality")) if isinstance(address_data, dict) else None
+    address = street or venue_name
+    organizer = json_event.get("organizer") if isinstance(json_event, dict) else {}
+    organizer_name = normalize_text(organizer.get("name")) if isinstance(organizer, dict) else None
+    products = extract_kiwol_products_from_jsonld(json_event or {})
+    if not products:
+        products = extract_products_from_dom(soup)
+    event_date = format_kiwol_event_date(json_event or {}, item.get("list_date"))
+    image = extract_event_image(soup, base_url=KIWOL_BASE_URL)
+    all_text = "\n".join(lines)
+    contact = {"contact_phone": extract_phone(all_text), "contact_email": extract_email(all_text), "contact_website": None}
+    subtitle = organizer_name or item.get("list_location")
+    return {"event_url": url, "event_slug": slug, "event_external_id": external_id, "region": region, "name": name or item.get("list_title") or url, "subtitle": subtitle, "description": description, "event_date": event_date, "city": city or item.get("list_location"), "address": address, "contact_phone": contact["contact_phone"], "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": image, "products": products, "score": score_event(name, region, products, contact, bool(image), event_date)}
+
+
 def build_event_from_item(item, session=None):
-    url = item["url"]; region = item["region"]; slug = item.get("slug"); external_id = item.get("external_id"); html = fetch_html(url, session=session); soup = remove_noise(BeautifulSoup(html, "html.parser")); lines = lines_from_soup(soup); header = extract_header_fields(soup); contact = extract_contact_info(soup, lines); products = extract_products_from_dom(soup); title = soup.title.get_text(" ", strip=True) if soup.title else url; name = header["name"] or normalize_text(title); image = extract_event_image(soup); description = extract_description(soup, lines)
+    if item.get("source") == "kiwol" or detect_source(item.get("url")) == "kiwol":
+        return build_kiwol_event_from_item(item, session=session)
+    url = item["url"]; region = item["region"]; slug = item.get("slug"); external_id = item.get("external_id"); html = fetch_html(url, session=session); soup = remove_noise(BeautifulSoup(html, "html.parser")); lines = lines_from_soup(soup); header = extract_header_fields(soup); contact = extract_contact_info(soup, lines); products = extract_products_from_dom(soup); title = soup.title.get_text(" ", strip=True) if soup.title else url; name = header["name"] or normalize_text(title); image = extract_event_image(soup, base_url=BIZOUK_BASE_URL); description = extract_description(soup, lines)
     return {"event_url": url, "event_slug": slug, "event_external_id": external_id, "region": region, "name": name, "subtitle": header.get("subtitle"), "description": description, "event_date": header.get("event_date"), "city": header.get("city"), "address": header.get("address"), "contact_phone": contact["contact_phone"], "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": image, "products": products, "score": score_event(name, region, products, contact, bool(image), header.get("event_date"))}
 
 def worker(item):
@@ -426,7 +580,7 @@ def run():
     try:
         for region, start_url in regions.items():
             try:
-                html = fetch_html(start_url); region_items = extract_event_links(html)
+                html = fetch_html(start_url); region_items = extract_event_links(html, start_url=start_url)
                 for item in region_items: item["region"] = region
                 all_items.extend(region_items)
             except Exception as exc:

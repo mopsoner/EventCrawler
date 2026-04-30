@@ -29,6 +29,58 @@
     "rotterdam": {
       "enabled": false,
       "url": "https://www.bizouk.com/?region=rotterdam"
+    },
+    "kiwol_guadeloupe": {
+      "enabled": true,
+      "url": "https://www.kiwol.com/agenda?location=GP"
+    },
+    "kiwol_martinique": {
+      "enabled": false,
+      "url": "https://www.kiwol.com/agenda?location=MQ"
+    },
+    "kiwol_guyane": {
+      "enabled": false,
+      "url": "https://www.kiwol.com/agenda?location=GF"
+    },
+    "kiwol_reunion": {
+      "enabled": false,
+      "url": "https://www.kiwol.com/agenda?location=RE"
+    },
+    "kiwol_saint_martin": {
+      "enabled": false,
+      "url": "https://www.kiwol.com/agenda?location=MF"
+    },
+    "kiwol_saint_barthelemy": {
+      "enabled": false,
+      "url": "https://www.kiwol.com/agenda?location=BL"
+    },
+    "kiwol_france": {
+      "enabled": false,
+      "url": "https://www.kiwol.com/agenda?location=FR"
+    },
+    "kiwol_belgique": {
+      "enabled": false,
+      "url": "https://www.kiwol.com/agenda?location=BE"
+    },
+    "kiwol_royaume_uni": {
+      "enabled": false,
+      "url": "https://www.kiwol.com/agenda?location=GB"
+    },
+    "kiwol_espagne": {
+      "enabled": false,
+      "url": "https://www.kiwol.com/agenda?location=ES"
+    },
+    "kiwol_jamaique": {
+      "enabled": false,
+      "url": "https://www.kiwol.com/agenda?location=JM"
+    },
+    "kiwol_dominique": {
+      "enabled": false,
+      "url": "https://www.kiwol.com/agenda?location=DM"
+    },
+    "kiwol_sainte_lucie": {
+      "enabled": false,
+      "url": "https://www.kiwol.com/agenda?location=LC"
     }
   }
 }
