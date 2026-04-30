@@ -1,0 +1,8 @@
+data/*.sqlite
+data/*.log
+data/booking_state.json
+data/booking_failures/
+data/booking_screens/
+data/crawl_status.json
+data/scheduler_state.json
+node_modules/
