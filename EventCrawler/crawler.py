@@ -5,7 +5,7 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -16,10 +16,8 @@ from config_store import load_config
 DB_PATH = "data/eventcrawler.sqlite"
 BIZOUK_BASE_URL = "https://www.bizouk.com"
 KIWOL_BASE_URL = "https://www.kiwol.com"
-BASE_URL = BIZOUK_BASE_URL
 BIZOUK_EVENT_URL_RE = re.compile(r"/events/details/([^/]+)/(?P<id>\d+)")
 KIWOL_EVENT_URL_RE = re.compile(r"/billetterie/(?P<id>\d+)")
-EVENT_URL_RE = BIZOUK_EVENT_URL_RE
 URL_RE = re.compile(r"https?://[^\s]+", re.I)
 STATUS_PATH = Path("data/crawl_status.json")
 CONFIG = load_config()
@@ -57,6 +55,54 @@ def ensure_column(cur, table, column, ddl):
     cols = [r[1] for r in cur.execute(f"PRAGMA table_info({table})").fetchall()]
     if column not in cols:
         cur.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
+def detect_source(url):
+    host = (urlparse(url or "").netloc or "").lower()
+    if "kiwol.com" in host:
+        return "kiwol"
+    return "bizouk"
+
+
+def source_base_url(source):
+    return KIWOL_BASE_URL if source == "kiwol" else BIZOUK_BASE_URL
+
+
+def normalize_event_url(url, source=None):
+    if not url:
+        return url
+    source = source or detect_source(url)
+    absolute = urljoin(source_base_url(source), str(url).strip())
+    parsed = urlparse(absolute)
+    path = re.sub(r"/+", "/", parsed.path).rstrip("/")
+    if source == "kiwol":
+        m = KIWOL_EVENT_URL_RE.search(path)
+        if m:
+            return f"{KIWOL_BASE_URL}/billetterie/{m.group('id')}"
+    if source == "bizouk":
+        m = BIZOUK_EVENT_URL_RE.search(path)
+        if m:
+            return f"{BIZOUK_BASE_URL}/events/details/{m.group(1)}/{m.group('id')}"
+    return urlunparse(("https", parsed.netloc.lower(), path, "", "", ""))
+
+
+def stable_text_key(value):
+    value = (value or "").lower().strip()
+    value = re.sub(r"[^a-z0-9]+", "_", value)
+    return value.strip("_") or "unknown"
+
+
+def stable_product_key(source, product_name, numeric_price):
+    price = "unknown" if numeric_price is None else f"{float(numeric_price):.2f}"
+    return f"{source}:{stable_text_key(product_name)}:{price}"
+
+
+def normalize_text(text):
+    return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def digits_only_count(text):
+    return len(re.sub(r"\D", "", text or ""))
 
 
 def init_db():
@@ -137,15 +183,50 @@ def init_db():
         );
         '''
     )
-    ensure_column(cur, "events", "event_external_id", "event_external_id TEXT")
-    ensure_column(cur, "events", "event_slug", "event_slug TEXT")
-    ensure_column(cur, "events", "contact_website", "contact_website TEXT")
-    ensure_column(cur, "events", "event_image", "event_image TEXT")
-    ensure_column(cur, "events", "subtitle", "subtitle TEXT")
-    ensure_column(cur, "events", "description", "description TEXT")
-    ensure_column(cur, "events", "manual_status", "manual_status TEXT")
-    ensure_column(cur, "events", "private_note", "private_note TEXT")
-    ensure_column(cur, "events", "is_watchlisted", "is_watchlisted INTEGER DEFAULT 0")
+    for col, ddl in [
+        ("event_external_id", "event_external_id TEXT"),
+        ("event_slug", "event_slug TEXT"),
+        ("contact_website", "contact_website TEXT"),
+        ("event_image", "event_image TEXT"),
+        ("subtitle", "subtitle TEXT"),
+        ("description", "description TEXT"),
+        ("manual_status", "manual_status TEXT"),
+        ("private_note", "private_note TEXT"),
+        ("is_watchlisted", "is_watchlisted INTEGER DEFAULT 0"),
+        ("source", "source TEXT DEFAULT 'bizouk'"),
+        ("event_url_normalized", "event_url_normalized TEXT"),
+    ]:
+        ensure_column(cur, "events", col, ddl)
+    for col, ddl in [
+        ("source", "source TEXT DEFAULT 'bizouk'"),
+        ("product_key", "product_key TEXT"),
+        ("family_key", "family_key TEXT"),
+        ("early_bird_score", "early_bird_score INTEGER DEFAULT 0"),
+        ("is_early_bird", "is_early_bird INTEGER DEFAULT 0"),
+        ("early_bird_confidence", "early_bird_confidence TEXT"),
+        ("early_bird_reason", "early_bird_reason TEXT"),
+    ]:
+        ensure_column(cur, "products", col, ddl)
+
+    rows = cur.execute("SELECT id, event_url, COALESCE(source, '') AS source FROM events").fetchall()
+    for row in rows:
+        source = row["source"] or detect_source(row["event_url"])
+        cur.execute(
+            "UPDATE events SET source=?, event_url_normalized=? WHERE id=?",
+            (source, normalize_event_url(row["event_url"], source), row["id"]),
+        )
+    products = cur.execute("SELECT id, event_id, product_name, numeric_price, COALESCE(source, '') AS source FROM products").fetchall()
+    for row in products:
+        source = row["source"]
+        if not source:
+            ev = cur.execute("SELECT COALESCE(source, 'bizouk') AS source FROM events WHERE id=?", (row["event_id"],)).fetchone()
+            source = ev["source"] if ev else "bizouk"
+        product_key = stable_product_key(source, row["product_name"], row["numeric_price"])
+        cur.execute("UPDATE products SET source=?, product_key=? WHERE id=?", (source, product_key, row["id"]))
+
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_events_source_external_id ON events(source, event_external_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_events_source_normalized_url ON events(source, event_url_normalized)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_products_event_product_key ON products(event_id, product_key)")
     c.commit()
     c.close()
 
@@ -177,39 +258,44 @@ def save_event_ai_label(event_id, event):
 
 
 def create_crawl_run(regions):
-    c = conn(); cur = c.cursor(); cur.execute("INSERT INTO crawl_runs(mode, regions, status) VALUES (?, ?, ?)", ("manual", ",".join(regions), "running")); run_id = cur.lastrowid; c.commit(); c.close(); return run_id
+    c = conn()
+    cur = c.cursor()
+    cur.execute("INSERT INTO crawl_runs(mode, regions, status) VALUES (?, ?, ?)", ("manual", ",".join(regions), "running"))
+    run_id = cur.lastrowid
+    c.commit()
+    c.close()
+    return run_id
 
 
 def update_crawl_run(run_id, **fields):
-    if not fields: return
-    c = conn(); keys = list(fields.keys()); sql = "UPDATE crawl_runs SET " + ", ".join([f"{k}=?" for k in keys]) + " WHERE id=?"; c.execute(sql, [fields[k] for k in keys] + [run_id]); c.commit(); c.close()
+    if not fields:
+        return
+    c = conn()
+    keys = list(fields.keys())
+    sql = "UPDATE crawl_runs SET " + ", ".join([f"{k}=?" for k in keys]) + " WHERE id=?"
+    c.execute(sql, [fields[k] for k in keys] + [run_id])
+    c.commit()
+    c.close()
 
 
 def log_crawl_error(run_id, scope, target, error_text):
-    c = conn(); c.execute("INSERT INTO crawl_errors(crawl_run_id, scope, target, error_text) VALUES (?, ?, ?, ?)", (run_id, scope, target, str(error_text)[:2000])); c.commit(); c.close()
-
-
-def normalize_text(text): return re.sub(r"\s+", " ", (text or "").strip())
-
-def digits_only_count(text): return len(re.sub(r"\D", "", text or ""))
-
-
-def detect_source(url):
-    host = (urlparse(url or "").netloc or "").lower()
-    if "kiwol.com" in host:
-        return "kiwol"
-    return "bizouk"
-
-
-def source_base_url(source):
-    return KIWOL_BASE_URL if source == "kiwol" else BIZOUK_BASE_URL
+    c = conn()
+    c.execute(
+        "INSERT INTO crawl_errors(crawl_run_id, scope, target, error_text) VALUES (?, ?, ?, ?)",
+        (run_id, scope, target, str(error_text)[:2000]),
+    )
+    c.commit()
+    c.close()
 
 
 def parse_price(text):
-    if text is None: return None
-    if isinstance(text, (int, float)): return float(text)
+    if text is None:
+        return None
+    if isinstance(text, (int, float)):
+        return float(text)
     t = str(text).strip().lower().replace(",", ".")
-    if "gratuit" in t or "free" in t: return 0.0
+    if "gratuit" in t or "free" in t:
+        return 0.0
     m = re.search(r"(\d+(?:\.\d+)?)\s*(?:€|eur|euro)?", t)
     return float(m.group(1)) if m else None
 
@@ -219,8 +305,10 @@ def price_text_from_value(value, currency="EUR"):
     if price is None:
         return normalize_text(str(value or "")) or None
     suffix = "€" if str(currency or "").upper() == "EUR" else str(currency or "").upper()
-    if price == 0: return f"0 {suffix}".strip()
-    if float(price).is_integer(): return f"{int(price)} {suffix}".strip()
+    if price == 0:
+        return f"0 {suffix}".strip()
+    if float(price).is_integer():
+        return f"{int(price)} {suffix}".strip()
     return f"{price:.2f} {suffix}".strip()
 
 
@@ -228,27 +316,37 @@ def extract_email(text):
     m = re.search(r"([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})", text or "", re.I)
     return m.group(1) if m else None
 
+
 def extract_phone(text):
     candidates = re.findall(r"(\+?\d[\d\s().-]{7,}\d)", text or "")
     for cand in candidates:
-        if digits_only_count(cand) >= 9: return re.sub(r"\s+", "", cand).strip()
+        if digits_only_count(cand) >= 9:
+            return re.sub(r"\s+", "", cand).strip()
     return None
+
 
 def extract_website(text):
     for url in URL_RE.findall(text or ""):
         cleaned = url.rstrip(').,;]')
-        if "bizouk.com" not in cleaned.lower() and "kiwol.com" not in cleaned.lower(): return cleaned
+        if "bizouk.com" not in cleaned.lower() and "kiwol.com" not in cleaned.lower():
+            return cleaned
     return None
 
-def extract_event_image(soup, base_url=BASE_URL):
+
+def extract_event_image(soup, base_url=BIZOUK_BASE_URL):
     meta = soup.find("meta", attrs={"property": "og:image"})
-    if meta and meta.get("content"): return urljoin(base_url, meta.get("content"))
+    if meta and meta.get("content"):
+        return urljoin(base_url, meta.get("content"))
     for img in soup.find_all("img"):
         src = img.get("src") or ""
-        if not src: continue
-        full = urljoin(base_url, src); low = full.lower()
-        if any(k in low for k in ["flyer", "affiche", "uploads", "/img/", "cloudfront", "thumbnail"]): return full
+        if not src:
+            continue
+        full = urljoin(base_url, src)
+        low = full.lower()
+        if any(k in low for k in ["flyer", "affiche", "uploads", "/img/", "cloudfront", "thumbnail"]):
+            return full
     return None
+
 
 def extract_description(soup, lines):
     for i, line in enumerate(lines):
@@ -257,148 +355,221 @@ def extract_description(soup, lines):
             block = []
             for nxt in lines[i + 1:i + 30]:
                 nxt_low = nxt.lower()
-                if nxt_low in {"contact", "tickets", "billets", "produits", "products", "location", "lieu", "organisateur"}: break
-                if len(nxt) > 2: block.append(nxt)
+                if nxt_low in {"contact", "tickets", "billets", "produits", "products", "location", "lieu", "organisateur"}:
+                    break
+                if len(nxt) > 2:
+                    block.append(nxt)
             text = normalize_text(" ".join(block))
-            if len(text) >= 30: return text[:4000]
+            if len(text) >= 30:
+                return text[:4000]
     meta = soup.find("meta", attrs={"property": "og:description"}) or soup.find("meta", attrs={"name": "description"})
     if meta and meta.get("content"):
         text = normalize_text(meta.get("content"))
-        if text: return text[:4000]
+        if text:
+            return text[:4000]
     return None
 
+
 def score_event(name, region, products, contact, has_image, event_date):
-    score = 0; low = (name or "").lower()
-    if any(k in low for k in ["carnaval", "carnival", "jouvert", "boat", "pre-registration", "pré-inscription", "dreamland"]): score += 30
-    if region in {"london", "rotterdam", "paris", "guadeloupe", "kiwol_guadeloupe"}: score += 15
-    if any(p.get("is_free") for p in products): score += 15
-    if any(p.get("is_free") and p.get("is_available") is True for p in products): score += 25
-    if contact.get("contact_phone") or contact.get("contact_email") or contact.get("contact_website"): score += 10
-    if has_image: score += 5
-    if event_date: score += 5
+    score = 0
+    low = (name or "").lower()
+    if any(k in low for k in ["carnaval", "carnival", "jouvert", "boat", "pre-registration", "pré-inscription", "dreamland"]):
+        score += 30
+    if region in {"london", "rotterdam", "paris", "guadeloupe", "kiwol_guadeloupe"}:
+        score += 15
+    if any(p.get("is_free") for p in products):
+        score += 15
+    if any(p.get("is_free") and p.get("is_available") is True for p in products):
+        score += 25
+    if contact.get("contact_phone") or contact.get("contact_email") or contact.get("contact_website"):
+        score += 10
+    if has_image:
+        score += 5
+    if event_date:
+        score += 5
     return min(score, 100)
 
+
 def fetch_html(url, session=None):
-    client = session or requests; r = client.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT); r.raise_for_status(); return r.text
+    client = session or requests
+    r = client.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+    r.raise_for_status()
+    return r.text
+
 
 def parse_event_ref(href, source=None):
     source = source or detect_source(href)
     if source == "kiwol":
         m = KIWOL_EVENT_URL_RE.search(href or "")
-        if not m: return None
+        if not m:
+            return None
         return {"slug": f"kiwol-{m.group('id')}", "external_id": m.group("id"), "source": "kiwol"}
     m = BIZOUK_EVENT_URL_RE.search(href or "")
-    if not m: return None
+    if not m:
+        return None
     return {"slug": m.group(1), "external_id": m.group("id"), "source": "bizouk"}
+
 
 def extract_event_links(html, start_url=None):
     source = detect_source(start_url or "")
     base_url = source_base_url(source)
-    soup = BeautifulSoup(html, "html.parser"); out = {}
+    soup = BeautifulSoup(html, "html.parser")
+    out = {}
     if source == "kiwol":
-        selectors = "a.ticketing-card-search-container[href], a[href*='/billetterie/']"
-        for a in soup.select(selectors):
+        for a in soup.select("a.ticketing-card-search-container[href], a[href*='/billetterie/']"):
             href = a.get("href") or ""
-            if "/billetterie/" not in href: continue
-            full = urljoin(base_url, href); ref = parse_event_ref(full, source="kiwol")
-            if not ref: continue
+            if "/billetterie/" not in href:
+                continue
+            full = normalize_event_url(urljoin(base_url, href), "kiwol")
+            ref = parse_event_ref(full, source="kiwol")
+            if not ref:
+                continue
             title_el = a.select_one(".ticketing-card-title")
             date_el = a.select_one(".ticketing-card-date")
             location_el = a.select_one(".ticketing-card-location")
-            title = normalize_text(title_el.get_text(" ", strip=True)) if title_el else None
-            date_text = normalize_text(date_el.get_text(" ", strip=True)) if date_el else None
-            location_text = normalize_text(location_el.get_text(" ", strip=True)) if location_el else None
-            out[ref["external_id"]] = {"url": full, **ref, "list_title": title, "list_date": date_text, "list_location": location_text}
+            out[f"kiwol:{ref['external_id']}"] = {
+                "url": full,
+                **ref,
+                "list_title": normalize_text(title_el.get_text(" ", strip=True)) if title_el else None,
+                "list_date": normalize_text(date_el.get_text(" ", strip=True)) if date_el else None,
+                "list_location": normalize_text(location_el.get_text(" ", strip=True)) if location_el else None,
+            }
         return list(out.values())
     for a in soup.select("a[href]"):
         href = a.get("href") or ""
-        if "/events/details/" not in href: continue
-        full = urljoin(base_url, href); ref = parse_event_ref(full, source="bizouk")
-        if not ref: continue
-        out[ref["external_id"]] = {"url": full, **ref}
+        if "/events/details/" not in href:
+            continue
+        full = normalize_event_url(urljoin(base_url, href), "bizouk")
+        ref = parse_event_ref(full, source="bizouk")
+        if not ref:
+            continue
+        out[f"bizouk:{ref['external_id']}"] = {"url": full, **ref}
     return list(out.values())
 
+
 def remove_noise(soup):
-    for tag in soup(["script", "style", "noscript"]): tag.decompose()
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
     return soup
 
+
 def lines_from_node(node):
-    if not node: return []
+    if not node:
+        return []
     return [normalize_text(x) for x in node.get_text("\n", strip=True).splitlines() if normalize_text(x)]
 
-def lines_from_soup(soup): return [normalize_text(x) for x in soup.get_text("\n", strip=True).splitlines() if normalize_text(x)]
+
+def lines_from_soup(soup):
+    return [normalize_text(x) for x in soup.get_text("\n", strip=True).splitlines() if normalize_text(x)]
+
 
 def looks_like_date_line(text):
-    if not text: return False
+    if not text:
+        return False
     low = text.lower()
     return bool(re.search(r"\b20\d{2}\b", text)) and any(k in low for k in ["am", "pm", " at ", " à ", "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december", "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"])
 
+
 def extract_header_fields(soup):
-    h1 = soup.find("h1"); h2 = soup.find("h2"); name = normalize_text(h1.get_text(" ", strip=True)) if h1 else None; subtitle = normalize_text(h2.get_text(" ", strip=True)) if h2 else None; date_text = None; city = None; address = None; search_root = None
+    h1 = soup.find("h1")
+    h2 = soup.find("h2")
+    name = normalize_text(h1.get_text(" ", strip=True)) if h1 else None
+    subtitle = normalize_text(h2.get_text(" ", strip=True)) if h2 else None
+    date_text = None
+    city = None
+    address = None
+    search_root = None
     if h1:
         parent = h1.parent
         for _ in range(4):
-            if not parent: break
-            if hasattr(parent, "get_text") and len(parent.get_text(" ", strip=True)) > 20: search_root = parent; break
+            if not parent:
+                break
+            if hasattr(parent, "get_text") and len(parent.get_text(" ", strip=True)) > 20:
+                search_root = parent
+                break
             parent = parent.parent
-    lines = lines_from_node(search_root) if search_root else lines_from_soup(soup); start = 0
-    if name and name in lines: start = lines.index(name) + 1
-    if subtitle and subtitle in lines[start:]: start = lines.index(subtitle, start) + 1
+    lines = lines_from_node(search_root) if search_root else lines_from_soup(soup)
+    start = 0
+    if name and name in lines:
+        start = lines.index(name) + 1
+    if subtitle and subtitle in lines[start:]:
+        start = lines.index(subtitle, start) + 1
     for i in range(start, min(start + 12, len(lines))):
         line = lines[i]
-        if not date_text and looks_like_date_line(line): date_text = line; continue
-        if date_text and not city and digits_only_count(line) < 6 and "view my" not in line.lower() and "contact" not in line.lower(): city = line; continue
-        if date_text and city and not address and "view my" not in line.lower() and "contact" not in line.lower(): address = line; break
+        if not date_text and looks_like_date_line(line):
+            date_text = line
+            continue
+        if date_text and not city and digits_only_count(line) < 6 and "view my" not in line.lower() and "contact" not in line.lower():
+            city = line
+            continue
+        if date_text and city and not address and "view my" not in line.lower() and "contact" not in line.lower():
+            address = line
+            break
     return {"name": name, "subtitle": subtitle, "event_date": date_text, "city": city, "address": address}
+
 
 def extract_contact_info(soup, lines):
     candidate_lines = []
     for i, line in enumerate(lines):
         low = line.lower()
-        if low == "contact" or low.startswith("contact ") or "contact organizer" in low: candidate_lines.extend(lines[i:i + 25])
+        if low == "contact" or low.startswith("contact ") or "contact organizer" in low:
+            candidate_lines.extend(lines[i:i + 25])
     if not candidate_lines:
         for i, line in enumerate(lines):
             low = line.lower()
-            if "infoline" in low or "whatsapp" in low or low.startswith("site") or low.startswith("website"): start = max(0, i - 2); candidate_lines.extend(lines[start:i + 8])
-    seen = set(); candidate_lines = [x for x in candidate_lines if not (x in seen or seen.add(x))]
-    contact_block_text = "\n".join(candidate_lines); contact_phone = None; contact_email = None; contact_website = None
+            if "infoline" in low or "whatsapp" in low or low.startswith("site") or low.startswith("website"):
+                candidate_lines.extend(lines[max(0, i - 2):i + 8])
+    seen = set()
+    candidate_lines = [x for x in candidate_lines if not (x in seen or seen.add(x))]
+    contact_block_text = "\n".join(candidate_lines)
+    contact_phone = None
+    contact_email = None
+    contact_website = None
     for line in candidate_lines:
         low = line.lower()
-        if ("infoline" in low or "whatsapp" in low or low.startswith("phone")) and not contact_phone: contact_phone = extract_phone(line)
-        if (low.startswith("site") or low.startswith("website")) and not contact_website: contact_website = extract_website(line)
-        if not contact_email: contact_email = extract_email(line)
-    if not contact_phone: contact_phone = extract_phone(contact_block_text)
-    if not contact_email: contact_email = extract_email(contact_block_text)
-    if not contact_website: contact_website = extract_website(contact_block_text)
-    return {"contact_phone": contact_phone, "contact_email": contact_email, "contact_website": contact_website}
+        if ("infoline" in low or "whatsapp" in low or low.startswith("phone")) and not contact_phone:
+            contact_phone = extract_phone(line)
+        if (low.startswith("site") or low.startswith("website")) and not contact_website:
+            contact_website = extract_website(line)
+        if not contact_email:
+            contact_email = extract_email(line)
+    return {
+        "contact_phone": contact_phone or extract_phone(contact_block_text),
+        "contact_email": contact_email or extract_email(contact_block_text),
+        "contact_website": contact_website or extract_website(contact_block_text),
+    }
+
 
 def is_non_product_name(line):
     low = (line or "").lower()
     return any(x in low for x in ["total amount", "montant total", "tickets", "billets", "transportation", "pay with friends", "details", "sold out", "upcoming", "contact organizer", "view my itenary", "view my itinerary", "log in", "register now", "starting from", "conditions", "cgv", "contact", "share", "location"])
 
-def normalize_product_key(text):
-    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
 
 def product_name_score(name):
     low = (name or "").lower()
     score = 0
-    if 3 <= len(name or "") <= 80: score += 2
-    if any(k in low for k in ["entry", "ticket", "billet", "pass", "free", "gratuit", "single", "general", "admission", "prévente", "reservation", "réservation"]): score += 3
-    if any(k in low for k in ["total", "details", "contact", "share", "location", "description"]): score -= 3
+    if 3 <= len(name or "") <= 80:
+        score += 2
+    if any(k in low for k in ["entry", "ticket", "billet", "pass", "free", "gratuit", "single", "general", "admission", "prévente", "reservation", "réservation"]):
+        score += 3
+    if any(k in low for k in ["total", "details", "contact", "share", "location", "description"]):
+        score -= 3
     return score
 
-def dedupe_products(products):
+
+def dedupe_products(products, source="bizouk"):
     best = {}
     for p in products:
-        norm_name = normalize_product_key(p.get("product_name"))
-        price = p.get("numeric_price")
-        key = (norm_name, price)
+        p["source"] = p.get("source") or source
+        p["product_key"] = p.get("product_key") or stable_product_key(p["source"], p.get("product_name"), p.get("numeric_price"))
         candidate_score = product_name_score(p.get("product_name"))
+        key = p["product_key"]
         if key not in best or candidate_score > best[key][0] or (candidate_score == best[key][0] and len(p.get("product_name") or "") < len(best[key][1].get("product_name") or "")):
             best[key] = (candidate_score, p)
     return [item[1] for item in best.values()]
 
-def extract_products_from_dom(soup):
+
+def extract_products_from_dom(soup, source="bizouk"):
     products = []
     raw_seen = set()
     for div in soup.find_all(["div", "section", "article", "li"]):
@@ -415,14 +586,11 @@ def extract_products_from_dom(soup):
         price = parse_price(price_line)
         price_idx = lines.index(price_line)
         name = None
-        search_before = lines[max(0, price_idx - 3):price_idx]
-        for line in reversed(search_before):
+        for line in reversed(lines[max(0, price_idx - 3):price_idx]):
             if parse_price(line) is None and len(line) < 120 and not is_non_product_name(line):
                 name = line
                 break
-        if not name:
-            continue
-        if name.lower() == price_line.lower():
+        if not name or name.lower() == price_line.lower():
             continue
         blob = " ".join(lines).lower()
         is_available = True
@@ -430,12 +598,12 @@ def extract_products_from_dom(soup):
             is_available = False
         elif any(w in blob for w in ["upcoming", "à venir"]):
             is_available = None
-        key = (normalize_product_key(name), price_line)
-        if key in raw_seen:
+        product_key = stable_product_key(source, name, price)
+        if product_key in raw_seen:
             continue
-        raw_seen.add(key)
-        products.append({"product_name": name, "price_text": price_line, "numeric_price": price, "is_free": price == 0.0, "is_available": is_available})
-    products = dedupe_products(products)
+        raw_seen.add(product_key)
+        products.append({"source": source, "product_key": product_key, "product_name": name, "price_text": price_text_from_value(price, "EUR") or price_line, "numeric_price": price, "is_free": price == 0.0, "is_available": is_available})
+    products = dedupe_products(products, source)
     products.sort(key=lambda p: (not p["is_free"], p["numeric_price"] if p["numeric_price"] is not None else 999999, -(product_name_score(p.get("product_name")))))
     return products
 
@@ -443,7 +611,8 @@ def extract_products_from_dom(soup):
 def extract_jsonld_event(soup):
     for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
         text = script.get_text(strip=True)
-        if not text: continue
+        if not text:
+            continue
         try:
             data = json.loads(text)
         except Exception:
@@ -464,21 +633,28 @@ def format_kiwol_event_date(json_event, fallback=None):
     start_time = schedule.get("startTime")
     end_time = schedule.get("endTime")
     parts = []
-    if start_date: parts.append(str(start_date))
-    if end_date and end_date != start_date: parts.append(f"au {end_date}")
+    if start_date:
+        parts.append(str(start_date))
+    if end_date and end_date != start_date:
+        parts.append(f"au {end_date}")
     if start_time:
         time_part = str(start_time)[:5]
-        if end_time: time_part += f"-{str(end_time)[:5]}"
+        if end_time:
+            time_part += f"-{str(end_time)[:5]}"
         parts.append(time_part)
     return " ".join(parts) or fallback
 
 
 def offers_to_list(offers):
-    if not offers: return []
-    if isinstance(offers, list): return offers
+    if not offers:
+        return []
+    if isinstance(offers, list):
+        return offers
     nested = offers.get("offers") if isinstance(offers, dict) else None
-    if isinstance(nested, list): return nested
-    if isinstance(offers, dict) and offers.get("@type") == "Offer": return [offers]
+    if isinstance(nested, list):
+        return nested
+    if isinstance(offers, dict) and offers.get("@type") == "Offer":
+        return [offers]
     return []
 
 
@@ -491,27 +667,31 @@ def extract_kiwol_products_from_jsonld(json_event):
             continue
         currency = offer.get("priceCurrency") or default_currency or "EUR"
         price = parse_price(offer.get("price"))
-        price_text = price_text_from_value(offer.get("price"), currency)
+        product_name = normalize_text(offer.get("name")) or "Billet"
         availability = str(offer.get("availability") or "").lower()
-        is_available = None
+        is_available = True
         if availability:
             is_available = "instock" in availability or "in_stock" in availability
             if any(k in availability for k in ["soldout", "outofstock", "discontinued"]):
                 is_available = False
-        product_name = normalize_text(offer.get("name")) or "Billet"
-        is_free = price == 0.0 or "free" in product_name.lower() or "gratuit" in product_name.lower()
         products.append({
+            "source": "kiwol",
+            "product_key": stable_product_key("kiwol", product_name, price),
             "product_name": product_name,
-            "price_text": price_text,
+            "price_text": price_text_from_value(offer.get("price"), currency),
             "numeric_price": price,
-            "is_free": is_free,
-            "is_available": is_available if is_available is not None else True,
+            "is_free": price == 0.0 or "free" in product_name.lower() or "gratuit" in product_name.lower(),
+            "is_available": is_available,
         })
-    return dedupe_products(products)
+    return dedupe_products(products, "kiwol")
 
 
 def build_kiwol_event_from_item(item, session=None):
-    url = item["url"]; region = item["region"]; slug = item.get("slug"); external_id = item.get("external_id")
+    source = "kiwol"
+    url = normalize_event_url(item["url"], source)
+    region = item["region"]
+    slug = item.get("slug")
+    external_id = item.get("external_id")
     html = fetch_html(url, session=session)
     raw_soup = BeautifulSoup(html, "html.parser")
     json_event = extract_jsonld_event(raw_soup)
@@ -527,78 +707,154 @@ def build_kiwol_event_from_item(item, session=None):
     venue_name = normalize_text(location.get("name")) if isinstance(location, dict) else None
     street = normalize_text(address_data.get("streetAddress")) if isinstance(address_data, dict) else None
     city = normalize_text(address_data.get("addressLocality")) if isinstance(address_data, dict) else None
-    address = street or venue_name
     organizer = json_event.get("organizer") if isinstance(json_event, dict) else {}
     organizer_name = normalize_text(organizer.get("name")) if isinstance(organizer, dict) else None
-    products = extract_kiwol_products_from_jsonld(json_event or {})
-    if not products:
-        products = extract_products_from_dom(soup)
+    products = extract_kiwol_products_from_jsonld(json_event or {}) or extract_products_from_dom(soup, source)
     event_date = format_kiwol_event_date(json_event or {}, item.get("list_date"))
     image = extract_event_image(soup, base_url=KIWOL_BASE_URL)
     all_text = "\n".join(lines)
     contact = {"contact_phone": extract_phone(all_text), "contact_email": extract_email(all_text), "contact_website": None}
-    subtitle = organizer_name or item.get("list_location")
-    return {"event_url": url, "event_slug": slug, "event_external_id": external_id, "region": region, "name": name or item.get("list_title") or url, "subtitle": subtitle, "description": description, "event_date": event_date, "city": city or item.get("list_location"), "address": address, "contact_phone": contact["contact_phone"], "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": image, "products": products, "score": score_event(name, region, products, contact, bool(image), event_date)}
+    return {"source": source, "event_url": url, "event_url_normalized": normalize_event_url(url, source), "event_slug": slug, "event_external_id": external_id, "region": region, "name": name or item.get("list_title") or url, "subtitle": organizer_name or item.get("list_location"), "description": description, "event_date": event_date, "city": city or item.get("list_location"), "address": street or venue_name, "contact_phone": contact["contact_phone"], "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": image, "products": products, "score": score_event(name, region, products, contact, bool(image), event_date)}
 
 
 def build_event_from_item(item, session=None):
     if item.get("source") == "kiwol" or detect_source(item.get("url")) == "kiwol":
         return build_kiwol_event_from_item(item, session=session)
-    url = item["url"]; region = item["region"]; slug = item.get("slug"); external_id = item.get("external_id"); html = fetch_html(url, session=session); soup = remove_noise(BeautifulSoup(html, "html.parser")); lines = lines_from_soup(soup); header = extract_header_fields(soup); contact = extract_contact_info(soup, lines); products = extract_products_from_dom(soup); title = soup.title.get_text(" ", strip=True) if soup.title else url; name = header["name"] or normalize_text(title); image = extract_event_image(soup, base_url=BIZOUK_BASE_URL); description = extract_description(soup, lines)
-    return {"event_url": url, "event_slug": slug, "event_external_id": external_id, "region": region, "name": name, "subtitle": header.get("subtitle"), "description": description, "event_date": header.get("event_date"), "city": header.get("city"), "address": header.get("address"), "contact_phone": contact["contact_phone"], "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": image, "products": products, "score": score_event(name, region, products, contact, bool(image), header.get("event_date"))}
+    source = "bizouk"
+    url = normalize_event_url(item["url"], source)
+    region = item["region"]
+    slug = item.get("slug")
+    external_id = item.get("external_id")
+    html = fetch_html(url, session=session)
+    soup = remove_noise(BeautifulSoup(html, "html.parser"))
+    lines = lines_from_soup(soup)
+    header = extract_header_fields(soup)
+    contact = extract_contact_info(soup, lines)
+    products = extract_products_from_dom(soup, source)
+    title = soup.title.get_text(" ", strip=True) if soup.title else url
+    name = header["name"] or normalize_text(title)
+    image = extract_event_image(soup, base_url=BIZOUK_BASE_URL)
+    description = extract_description(soup, lines)
+    return {"source": source, "event_url": url, "event_url_normalized": normalize_event_url(url, source), "event_slug": slug, "event_external_id": external_id, "region": region, "name": name, "subtitle": header.get("subtitle"), "description": description, "event_date": header.get("event_date"), "city": header.get("city"), "address": header.get("address"), "contact_phone": contact["contact_phone"], "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": image, "products": products, "score": score_event(name, region, products, contact, bool(image), header.get("event_date"))}
+
 
 def worker(item):
     session = requests.Session()
-    try: return build_event_from_item(item, session=session)
-    finally: session.close()
+    try:
+        return build_event_from_item(item, session=session)
+    finally:
+        session.close()
+
 
 def record_product_change(cur, event_id, product_name, change_type, old_price, new_price, old_is_free, new_is_free, old_is_available, new_is_available):
     cur.execute("INSERT INTO product_history(event_id, product_name, change_type, old_price, new_price, old_is_free, new_is_free, old_is_available, new_is_available) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (event_id, product_name, change_type, old_price, new_price, old_is_free, new_is_free, old_is_available, new_is_available))
 
-def upsert_event(event):
-    c = conn(); cur = c.cursor(); cur.execute("SELECT id FROM events WHERE event_url = ?", (event["event_url"],)); row = cur.fetchone()
+
+def find_existing_event(cur, event):
+    source = event.get("source") or detect_source(event.get("event_url"))
+    normalized_url = event.get("event_url_normalized") or normalize_event_url(event.get("event_url"), source)
+    if event.get("event_external_id"):
+        row = cur.execute("SELECT id FROM events WHERE COALESCE(source, 'bizouk')=? AND event_external_id=? ORDER BY id ASC LIMIT 1", (source, event.get("event_external_id"))).fetchone()
+        if row:
+            return row
+    row = cur.execute("SELECT id FROM events WHERE COALESCE(source, 'bizouk')=? AND COALESCE(event_url_normalized, event_url)=? ORDER BY id ASC LIMIT 1", (source, normalized_url)).fetchone()
     if row:
-        event_id = row["id"]; cur.execute("UPDATE events SET event_external_id=?, event_slug=?, region=?, name=?, subtitle=?, description=?, event_date=?, city=?, address=?, contact_phone=?, contact_email=?, contact_website=?, event_image=?, score=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?", (event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("subtitle"), event.get("description"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0), event_id))
+        return row
+    return cur.execute("SELECT id FROM events WHERE event_url=? ORDER BY id ASC LIMIT 1", (event.get("event_url"),)).fetchone()
+
+
+def upsert_event(event):
+    c = conn()
+    cur = c.cursor()
+    source = event.get("source") or detect_source(event.get("event_url"))
+    event["event_url_normalized"] = event.get("event_url_normalized") or normalize_event_url(event.get("event_url"), source)
+    row = find_existing_event(cur, event)
+    if row:
+        event_id = row["id"]
+        cur.execute("UPDATE events SET source=?, event_url=?, event_url_normalized=?, event_external_id=?, event_slug=?, region=?, name=?, subtitle=?, description=?, event_date=?, city=?, address=?, contact_phone=?, contact_email=?, contact_website=?, event_image=?, score=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?", (source, event.get("event_url"), event.get("event_url_normalized"), event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("subtitle"), event.get("description"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0), event_id))
     else:
-        cur.execute("INSERT INTO events(event_url, event_external_id, event_slug, region, name, subtitle, description, event_date, city, address, contact_phone, contact_email, contact_website, event_image, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (event["event_url"], event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("subtitle"), event.get("description"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0))); event_id = cur.lastrowid
+        cur.execute("INSERT INTO events(source, event_url, event_url_normalized, event_external_id, event_slug, region, name, subtitle, description, event_date, city, address, contact_phone, contact_email, contact_website, event_image, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (source, event.get("event_url"), event.get("event_url_normalized"), event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("subtitle"), event.get("description"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0)))
+        event_id = cur.lastrowid
     for p in event.get("products", []):
-        cur.execute("SELECT id, numeric_price, is_free, is_available FROM products WHERE event_id=? AND product_name=? AND price_text=?", (event_id, p.get("product_name"), p.get("price_text"))); old = cur.fetchone(); avail = 1 if p.get("is_available") is True else 0 if p.get("is_available") is False else None
+        product_name = p.get("product_name") or "Billet"
+        numeric_price = p.get("numeric_price")
+        product_key = p.get("product_key") or stable_product_key(source, product_name, numeric_price)
+        price_text = p.get("price_text") or price_text_from_value(numeric_price, "EUR")
+        avail = 1 if p.get("is_available") is True else 0 if p.get("is_available") is False else None
+        is_free = 1 if p.get("is_free") else 0
+        old = cur.execute("SELECT id, numeric_price, is_free, is_available FROM products WHERE event_id=? AND product_key=? ORDER BY id ASC LIMIT 1", (event_id, product_key)).fetchone()
+        if not old:
+            old = cur.execute("SELECT id, numeric_price, is_free, is_available FROM products WHERE event_id=? AND product_name=? AND price_text=? ORDER BY id ASC LIMIT 1", (event_id, product_name, price_text)).fetchone()
         if old:
-            old_price = old["numeric_price"]; old_is_free = old["is_free"]; old_is_available = old["is_available"]; cur.execute("UPDATE products SET numeric_price=?, is_free=?, is_available=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?", (p.get("numeric_price"), 1 if p.get("is_free") else 0, avail, old["id"]))
-            if old_price != p.get("numeric_price") or old_is_free != (1 if p.get("is_free") else 0) or old_is_available != avail:
+            old_price = old["numeric_price"]
+            old_is_free = old["is_free"]
+            old_is_available = old["is_available"]
+            cur.execute("UPDATE products SET source=?, product_key=?, product_name=?, price_text=?, numeric_price=?, is_free=?, is_available=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?", (source, product_key, product_name, price_text, numeric_price, is_free, avail, old["id"]))
+            if old_price != numeric_price or old_is_free != is_free or old_is_available != avail:
                 change_type = "STATUS_CHANGE"
-                if old_price != p.get("numeric_price"): change_type = "PRICE_CHANGE"
-                elif old_is_available != avail: change_type = "AVAILABILITY_CHANGE"
-                elif old_is_free != (1 if p.get("is_free") else 0): change_type = "FREE_CHANGE"
-                record_product_change(cur, event_id, p.get("product_name"), change_type, old_price, p.get("numeric_price"), old_is_free, 1 if p.get("is_free") else 0, old_is_available, avail)
+                if old_price != numeric_price:
+                    change_type = "PRICE_CHANGE"
+                elif old_is_available != avail:
+                    change_type = "AVAILABILITY_CHANGE"
+                elif old_is_free != is_free:
+                    change_type = "FREE_CHANGE"
+                record_product_change(cur, event_id, product_name, change_type, old_price, numeric_price, old_is_free, is_free, old_is_available, avail)
         else:
-            cur.execute("INSERT INTO products(event_id, product_name, price_text, numeric_price, is_free, is_available) VALUES (?, ?, ?, ?, ?, ?)", (event_id, p.get("product_name"), p.get("price_text"), p.get("numeric_price"), 1 if p.get("is_free") else 0, avail)); record_product_change(cur, event_id, p.get("product_name"), "NEW_PRODUCT", None, p.get("numeric_price"), None, 1 if p.get("is_free") else 0, None, avail)
-    c.commit(); c.close(); return event_id
+            try:
+                cur.execute("INSERT INTO products(event_id, source, product_key, product_name, price_text, numeric_price, is_free, is_available) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (event_id, source, product_key, product_name, price_text, numeric_price, is_free, avail))
+                record_product_change(cur, event_id, product_name, "NEW_PRODUCT", None, numeric_price, None, is_free, None, avail)
+            except sqlite3.IntegrityError:
+                cur.execute("UPDATE products SET source=?, product_key=?, numeric_price=?, is_free=?, is_available=?, last_seen_at=CURRENT_TIMESTAMP WHERE event_id=? AND product_name=? AND price_text=?", (source, product_key, numeric_price, is_free, avail, event_id, product_name, price_text))
+    c.commit()
+    c.close()
+    return event_id
+
 
 def run():
-    init_db(); regions = enabled_regions(); selected = list(regions.keys()); crawl_run_id = create_crawl_run(selected); save_status({"running": True, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": datetime.utcnow().isoformat(), "finished_at": None, "last_error": None}); all_items = []; processed = 0; errors = 0
+    init_db()
+    regions = enabled_regions()
+    selected = list(regions.keys())
+    crawl_run_id = create_crawl_run(selected)
+    save_status({"running": True, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": datetime.utcnow().isoformat(), "finished_at": None, "last_error": None})
+    all_items = []
+    processed = 0
+    errors = 0
     try:
         for region, start_url in regions.items():
             try:
-                html = fetch_html(start_url); region_items = extract_event_links(html, start_url=start_url)
-                for item in region_items: item["region"] = region
+                html = fetch_html(start_url)
+                region_items = extract_event_links(html, start_url=start_url)
+                for item in region_items:
+                    item["region"] = region
                 all_items.extend(region_items)
             except Exception as exc:
-                errors += 1; log_crawl_error(crawl_run_id, "region", region, exc)
+                errors += 1
+                log_crawl_error(crawl_run_id, "region", region, exc)
         update_crawl_run(crawl_run_id, events_queued=len(all_items))
         if not all_items:
-            update_crawl_run(crawl_run_id, finished_at=datetime.utcnow().isoformat(), status="empty", errors_count=errors, notes="No events found"); save_status({"running": False, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": None, "finished_at": datetime.utcnow().isoformat(), "last_error": "No events found"}); return
+            update_crawl_run(crawl_run_id, finished_at=datetime.utcnow().isoformat(), status="empty", errors_count=errors, notes="No events found")
+            save_status({"running": False, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": None, "finished_at": datetime.utcnow().isoformat(), "last_error": "No events found"})
+            return
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = {executor.submit(worker, item): item for item in all_items}
             for future in as_completed(futures):
                 item = futures[future]
                 try:
-                    event = future.result(); event_id = upsert_event(event); save_event_ai_label(event_id, event); processed += 1
+                    event = future.result()
+                    event_id = upsert_event(event)
+                    save_event_ai_label(event_id, event)
+                    processed += 1
                 except Exception as exc:
-                    errors += 1; log_crawl_error(crawl_run_id, "event", item.get("url"), exc)
-        update_crawl_run(crawl_run_id, finished_at=datetime.utcnow().isoformat(), status="success", events_processed=processed, errors_count=errors); save_status({"running": False, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": None, "finished_at": datetime.utcnow().isoformat(), "last_error": None})
+                    errors += 1
+                    log_crawl_error(crawl_run_id, "event", item.get("url"), exc)
+        update_crawl_run(crawl_run_id, finished_at=datetime.utcnow().isoformat(), status="success", events_processed=processed, errors_count=errors)
+        save_status({"running": False, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": None, "finished_at": datetime.utcnow().isoformat(), "last_error": None})
     except Exception as exc:
-        errors += 1; log_crawl_error(crawl_run_id, "run", "global", exc); update_crawl_run(crawl_run_id, finished_at=datetime.utcnow().isoformat(), status="failed", events_processed=processed, errors_count=errors, notes=str(exc)[:500]); save_status({"running": False, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": None, "finished_at": datetime.utcnow().isoformat(), "last_error": str(exc)}); raise
+        errors += 1
+        log_crawl_error(crawl_run_id, "run", "global", exc)
+        update_crawl_run(crawl_run_id, finished_at=datetime.utcnow().isoformat(), status="failed", events_processed=processed, errors_count=errors, notes=str(exc)[:500])
+        save_status({"running": False, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": None, "finished_at": datetime.utcnow().isoformat(), "last_error": str(exc)})
+        raise
 
 
 if __name__ == "__main__":
