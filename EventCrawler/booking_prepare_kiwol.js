@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const { envNumber, headlessFromEnv, newBrowserPage } = require('./playwright_helpers');
 chromium.use(StealthPlugin());
 
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -15,8 +16,8 @@ const DEFAULT_LAST_NAME = (process.env.BOOKING_LAST_NAME || 'Mops').trim() || 'M
 const DEFAULT_FULL_NAME = (process.env.BOOKING_FULL_NAME || `${DEFAULT_FIRST_NAME} ${DEFAULT_LAST_NAME}`).trim() || `${DEFAULT_FIRST_NAME} ${DEFAULT_LAST_NAME}`;
 const DEFAULT_PHONE = (process.env.BOOKING_PHONE || '0691243236').trim() || '0691243236';
 const DEFAULT_GENDER = (process.env.BOOKING_GENDER || 'Homme').trim() || 'Homme';
-const DEFAULT_HEADLESS = !(process.env.PLAYWRIGHT_HEADLESS === '0' || String(process.env.PLAYWRIGHT_HEADLESS || '').toLowerCase() === 'false');
-const DEFAULT_SLOWMO = Number(process.env.PLAYWRIGHT_SLOWMO || '200');
+const DEFAULT_HEADLESS = headlessFromEnv('PLAYWRIGHT_HEADLESS', true);
+const DEFAULT_SLOWMO = envNumber('PLAYWRIGHT_SLOWMO', 200);
 const SCREENSHOTS_ENABLED = process.env.PLAYWRIGHT_SCREENSHOTS === '1';
 const SUCCESS_POLL_ATTEMPTS = Number(process.env.BOOKING_SUCCESS_POLL_ATTEMPTS || '8');
 const SUCCESS_POLL_DELAY_MS = Number(process.env.BOOKING_SUCCESS_POLL_DELAY_MS || '2500');
@@ -316,13 +317,11 @@ async function runPrepare(eventUrl, ticketCount, email, productName) {
   let lastSelectors = [];
   writeState({ running: true, status: 'running', mode: 'auto_confirm', event_url: eventUrl, product_name: productName, ticket_count: ticketCount, email, started_at: startedAt, finished_at: null, last_error: null, confirmation_text: null });
   logLine(`[kiwol] Starting auto-confirm flow: ${eventUrl} / ${productName} / qty=${ticketCount} / email=${email}`);
-  const browser = await chromium.launch({ headless: DEFAULT_HEADLESS, slowMo: DEFAULT_SLOWMO });
-  const context = await browser.newContext({
+  const { browser, page } = await newBrowserPage(chromium, {
+    headless: DEFAULT_HEADLESS,
+    slowMo: DEFAULT_SLOWMO,
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    locale: 'fr-FR',
-    timezoneId: 'Europe/Paris',
   });
-  const page = await context.newPage();
   const prefix = `kiwol-${slugify(productName)}`;
   try {
     lastStepName = 'load_event'; lastIntent = 'load_event';
