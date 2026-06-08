@@ -5,19 +5,18 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
 
 from ai_automation import enrich_event_labels
 from config_store import load_config
+from source_profiles import SOURCE_PROFILES, detect_source, normalize_event_url, parse_event_ref
 
 DB_PATH = "data/eventcrawler.sqlite"
 BIZOUK_BASE_URL = "https://www.bizouk.com"
 KIWOL_BASE_URL = "https://www.kiwol.com"
-BIZOUK_EVENT_URL_RE = re.compile(r"/events/details/([^/]+)/(?P<id>\d+)")
-KIWOL_EVENT_URL_RE = re.compile(r"/billetterie/(?P<id>\d+)")
 URL_RE = re.compile(r"https?://[^\s]+", re.I)
 STATUS_PATH = Path("data/crawl_status.json")
 CONFIG = load_config()
@@ -55,35 +54,6 @@ def ensure_column(cur, table, column, ddl):
     cols = [r[1] for r in cur.execute(f"PRAGMA table_info({table})").fetchall()]
     if column not in cols:
         cur.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
-
-
-def detect_source(url):
-    host = (urlparse(url or "").netloc or "").lower()
-    if "kiwol.com" in host:
-        return "kiwol"
-    return "bizouk"
-
-
-def source_base_url(source):
-    return KIWOL_BASE_URL if source == "kiwol" else BIZOUK_BASE_URL
-
-
-def normalize_event_url(url, source=None):
-    if not url:
-        return url
-    source = source or detect_source(url)
-    absolute = urljoin(source_base_url(source), str(url).strip())
-    parsed = urlparse(absolute)
-    path = re.sub(r"/+", "/", parsed.path).rstrip("/")
-    if source == "kiwol":
-        m = KIWOL_EVENT_URL_RE.search(path)
-        if m:
-            return f"{KIWOL_BASE_URL}/billetterie/{m.group('id')}"
-    if source == "bizouk":
-        m = BIZOUK_EVENT_URL_RE.search(path)
-        if m:
-            return f"{BIZOUK_BASE_URL}/events/details/{m.group(1)}/{m.group('id')}"
-    return urlunparse(("https", parsed.netloc.lower(), path, "", "", ""))
 
 
 def stable_text_key(value):
@@ -397,53 +367,31 @@ def fetch_html(url, session=None):
     return r.text
 
 
-def parse_event_ref(href, source=None):
-    source = source or detect_source(href)
-    if source == "kiwol":
-        m = KIWOL_EVENT_URL_RE.search(href or "")
-        if not m:
-            return None
-        return {"slug": f"kiwol-{m.group('id')}", "external_id": m.group("id"), "source": "kiwol"}
-    m = BIZOUK_EVENT_URL_RE.search(href or "")
-    if not m:
-        return None
-    return {"slug": m.group(1), "external_id": m.group("id"), "source": "bizouk"}
-
-
 def extract_event_links(html, start_url=None):
     source = detect_source(start_url or "")
-    base_url = source_base_url(source)
+    profile = SOURCE_PROFILES[source]
     soup = BeautifulSoup(html, "html.parser")
     out = {}
-    if source == "kiwol":
-        for a in soup.select("a.ticketing-card-search-container[href], a[href*='/billetterie/']"):
-            href = a.get("href") or ""
-            if "/billetterie/" not in href:
-                continue
-            full = normalize_event_url(urljoin(base_url, href), "kiwol")
-            ref = parse_event_ref(full, source="kiwol")
-            if not ref:
-                continue
+    selector = ", ".join(profile.event_link_selectors)
+    for a in soup.select(selector):
+        href = a.get("href") or ""
+        if profile.event_path_marker not in href:
+            continue
+        full = normalize_event_url(urljoin(profile.base_url, href), source)
+        ref = parse_event_ref(full, source=source)
+        if not ref:
+            continue
+        item = {"url": full, **ref}
+        if source == "kiwol":
             title_el = a.select_one(".ticketing-card-title")
             date_el = a.select_one(".ticketing-card-date")
             location_el = a.select_one(".ticketing-card-location")
-            out[f"kiwol:{ref['external_id']}"] = {
-                "url": full,
-                **ref,
+            item.update({
                 "list_title": normalize_text(title_el.get_text(" ", strip=True)) if title_el else None,
                 "list_date": normalize_text(date_el.get_text(" ", strip=True)) if date_el else None,
                 "list_location": normalize_text(location_el.get_text(" ", strip=True)) if location_el else None,
-            }
-        return list(out.values())
-    for a in soup.select("a[href]"):
-        href = a.get("href") or ""
-        if "/events/details/" not in href:
-            continue
-        full = normalize_event_url(urljoin(base_url, href), "bizouk")
-        ref = parse_event_ref(full, source="bizouk")
-        if not ref:
-            continue
-        out[f"bizouk:{ref['external_id']}"] = {"url": full, **ref}
+            })
+        out[f"{source}:{ref['external_id']}"] = item
     return list(out.values())
 
 

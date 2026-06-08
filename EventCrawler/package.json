@@ -6,7 +6,10 @@
   "scripts": {
     "postinstall": "npx playwright install chromium",
     "playwright:install": "playwright install chromium",
-    "playwright:install-deps": "playwright install-deps chromium"
+    "playwright:install-deps": "playwright install-deps chromium",
+    "analyze:pages": "node analyze_event_pages.js",
+    "book:bizouk": "node booking_prepare_bizouk.js",
+    "book:kiwol": "node booking_prepare_kiwol.js"
   },
   "dependencies": {
     "playwright": "^1.52.0",
