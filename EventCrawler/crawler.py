@@ -2,6 +2,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -377,6 +378,28 @@ def fetch_html(url, session=None):
     raise requests.TooManyRedirects("trop de redirections")
 
 
+def fetch_rendered_bizouk_html(url):
+    safe_url = validate_external_url(url)
+    helper = Path(__file__).with_name("render_event_page.js")
+    result = subprocess.run(
+        ["node", str(helper), safe_url],
+        capture_output=True,
+        text=True,
+        timeout=max(REQUEST_TIMEOUT, 60),
+        check=True,
+    )
+    return result.stdout
+
+
+def bizouk_page_needs_rendering(soup):
+    profile = SOURCE_PROFILES["bizouk"]
+    has_header = bool(soup.select_one("h1, [itemprop='name'], [class*='event-title']"))
+    has_products = any(soup.select_one(selector) for selector in profile.product_selectors)
+    structured_event = extract_jsonld_event(soup)
+    has_structured_products = bool(structured_event and offers_to_list(structured_event.get("offers")))
+    return not has_header or (not has_products and not has_structured_products)
+
+
 def extract_event_links(html, start_url=None):
     source = detect_source(start_url or "")
     profile = SOURCE_PROFILES[source]
@@ -425,7 +448,11 @@ def looks_like_date_line(text):
     if not text:
         return False
     low = text.lower()
-    return bool(re.search(r"\b20\d{2}\b", text)) and any(k in low for k in ["am", "pm", " at ", " à ", "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december", "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"])
+    months = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december", "janvier", "février", "fevrier", "mars", "avril", "mai", "juin", "juillet", "août", "aout", "septembre", "octobre", "novembre", "décembre", "decembre"]
+    has_month = any(month in low for month in months)
+    has_day = bool(re.search(r"\b(?:[0-2]?\d|3[01])(?:er|st|nd|rd|th)?\b", low))
+    has_time = bool(re.search(r"\b\d{1,2}(?::\d{2}|\s*h(?:\s*\d{2})?|\s*(?:am|pm))\b", low))
+    return has_month and (has_day or has_time)
 
 
 def extract_header_fields(soup):
@@ -433,9 +460,12 @@ def extract_header_fields(soup):
     h2 = soup.find("h2")
     name = normalize_text(h1.get_text(" ", strip=True)) if h1 else None
     subtitle = normalize_text(h2.get_text(" ", strip=True)) if h2 else None
-    date_text = None
-    city = None
-    address = None
+    date_node = soup.select_one("time[datetime], [itemprop='startDate'], [class*='event-date'], [class*='date'], [class*='time']")
+    location_node = soup.select_one("[itemprop='location'], [class*='event-location'], [class*='venue'], [class*='location']")
+    address_node = soup.select_one("[itemprop='streetAddress'], address, [class*='event-address'], [class*='address']")
+    date_text = normalize_text(date_node.get_text(" ", strip=True)) if date_node else None
+    city = normalize_text(location_node.get_text(" ", strip=True)) if location_node else None
+    address = normalize_text(address_node.get_text(" ", strip=True)) if address_node else None
     search_root = None
     if h1:
         parent = h1.parent
@@ -527,17 +557,78 @@ def dedupe_products(products, source="bizouk"):
     return [item[1] for item in best.values()]
 
 
+def availability_from_node(node, blob):
+    low = blob.lower()
+    disabled = node.has_attr("disabled") or str(node.get("aria-disabled", "")).lower() == "true" or bool(node.select_one("[disabled], [aria-disabled='true']"))
+    if disabled or any(word in low for word in ["sold out", "épuisé", "epuise", "indisponible", "complet"]):
+        return False
+    if any(word in low for word in ["upcoming", "à venir", "a venir"]):
+        return None
+    return True
+
+
+def product_from_node(node, source, profile=None):
+    lines = lines_from_node(node)
+    blob = " ".join(lines)
+    price_node = None
+    if profile:
+        for selector in profile.price_selectors:
+            price_node = node.select_one(selector)
+            if price_node:
+                break
+    price_value = price_node.get("data-price") if price_node and price_node.get("data-price") is not None else None
+    price_text = normalize_text(price_node.get_text(" ", strip=True)) if price_node else None
+    price = parse_price(price_value if price_value is not None else price_text)
+    if price is None:
+        candidates = [line for line in lines if re.search(r"(?:€|\beur\b|\beuros?\b|\bgratuit\b|\bfree\b)", line, re.I)]
+        if candidates:
+            price_text = candidates[0]
+            price = parse_price(price_text)
+    if price is None:
+        return None
+    name = None
+    if profile:
+        for selector in profile.product_name_selectors:
+            name_node = node.select_one(selector)
+            if name_node:
+                candidate = normalize_text(name_node.get_text(" ", strip=True))
+                if candidate and parse_price(candidate) is None and not is_non_product_name(candidate):
+                    name = candidate
+                    break
+    if not name:
+        for line in lines:
+            if line != price_text and parse_price(line) is None and len(line) < 120 and not is_non_product_name(line):
+                name = line
+                break
+    if not name:
+        return None
+    return {"source": source, "product_key": stable_product_key(source, name, price), "product_name": name, "price_text": price_text_from_value(price, "EUR") or price_text, "numeric_price": price, "is_free": price == 0.0, "is_available": availability_from_node(node, blob)}
+
+
 def extract_products_from_dom(soup, source="bizouk"):
     products = []
     raw_seen = set()
+    profile = SOURCE_PROFILES.get(source)
+    targeted_nodes = []
+    if profile:
+        for selector in profile.product_selectors:
+            targeted_nodes.extend(soup.select(selector))
+    # Prefer leaf-most ticket cards: parents commonly aggregate several prices.
+    targeted_ids = {id(node) for node in targeted_nodes}
+    leaf_nodes = [node for node in targeted_nodes if not any(id(child) in targeted_ids for child in node.find_all())]
+    for node in leaf_nodes:
+        product = product_from_node(node, source, profile)
+        if product and product["product_key"] not in raw_seen:
+            raw_seen.add(product["product_key"])
+            products.append(product)
     for div in soup.find_all(["div", "section", "article", "li"]):
         text = normalize_text(div.get_text(" ", strip=True))
-        if not text or "€" not in text or len(text) > 650:
+        if not text or not re.search(r"(?:€|\beur\b|\beuros?\b|\bgratuit\b|\bfree\b)", text, re.I) or len(text) > 650:
             continue
         lines = [normalize_text(x) for x in div.get_text("\n", strip=True).splitlines() if normalize_text(x)]
         if not lines or len(lines) > 12:
             continue
-        price_lines = [x for x in lines if parse_price(x) is not None and not is_non_product_name(x)]
+        price_lines = [x for x in lines if re.search(r"(?:€|\beur\b|\beuros?\b|\bgratuit\b|\bfree\b)", x, re.I) and parse_price(x) is not None and not is_non_product_name(x)]
         if len(price_lines) != 1:
             continue
         price_line = price_lines[0]
@@ -551,11 +642,7 @@ def extract_products_from_dom(soup, source="bizouk"):
         if not name or name.lower() == price_line.lower():
             continue
         blob = " ".join(lines).lower()
-        is_available = True
-        if any(w in blob for w in ["sold out", "épuisé", "indisponible", "complet"]):
-            is_available = False
-        elif any(w in blob for w in ["upcoming", "à venir"]):
-            is_available = None
+        is_available = availability_from_node(div, blob)
         product_key = stable_product_key(source, name, price)
         if product_key in raw_seen:
             continue
@@ -567,6 +654,19 @@ def extract_products_from_dom(soup, source="bizouk"):
 
 
 def extract_jsonld_event(soup):
+    def walk(value):
+        if isinstance(value, list):
+            for child in value:
+                yield from walk(child)
+        elif isinstance(value, dict):
+            types = value.get("@type") or []
+            types = types if isinstance(types, list) else [types]
+            if any(str(item).lower().endswith("event") for item in types):
+                yield value
+            for key, child in value.items():
+                if key != "@context":
+                    yield from walk(child)
+
     for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
         text = script.get_text(strip=True)
         if not text:
@@ -575,10 +675,8 @@ def extract_jsonld_event(soup):
             data = json.loads(text)
         except Exception:
             continue
-        candidates = data if isinstance(data, list) else [data]
-        for item in candidates:
-            if isinstance(item, dict) and item.get("@type") == "Event":
-                return item
+        for item in walk(data):
+            return item
     return None
 
 
@@ -616,7 +714,7 @@ def offers_to_list(offers):
     return []
 
 
-def extract_kiwol_products_from_jsonld(json_event):
+def extract_products_from_jsonld(json_event, source="kiwol"):
     products = []
     aggregate = json_event.get("offers") if isinstance(json_event, dict) else None
     default_currency = aggregate.get("priceCurrency") if isinstance(aggregate, dict) else "EUR"
@@ -633,15 +731,44 @@ def extract_kiwol_products_from_jsonld(json_event):
             if any(k in availability for k in ["soldout", "outofstock", "discontinued"]):
                 is_available = False
         products.append({
-            "source": "kiwol",
-            "product_key": stable_product_key("kiwol", product_name, price),
+            "source": source,
+            "product_key": stable_product_key(source, product_name, price),
             "product_name": product_name,
             "price_text": price_text_from_value(offer.get("price"), currency),
             "numeric_price": price,
             "is_free": price == 0.0 or "free" in product_name.lower() or "gratuit" in product_name.lower(),
             "is_available": is_available,
         })
-    return dedupe_products(products, "kiwol")
+    return dedupe_products(products, source)
+
+
+def jsonld_event_fields(json_event):
+    if not isinstance(json_event, dict):
+        return {}
+    location = json_event.get("location") or {}
+    if isinstance(location, list):
+        location = location[0] if location else {}
+    address = location.get("address") if isinstance(location, dict) else {}
+    if isinstance(address, str):
+        address = {"streetAddress": address}
+    organizer = json_event.get("organizer") or {}
+    if isinstance(organizer, list):
+        organizer = organizer[0] if organizer else {}
+    image = json_event.get("image")
+    if isinstance(image, list):
+        image = image[0] if image else None
+    if isinstance(image, dict):
+        image = image.get("url") or image.get("contentUrl")
+    return {
+        "name": normalize_text(json_event.get("name")),
+        "description": normalize_text(json_event.get("description"))[:4000] or None,
+        "event_date": format_kiwol_event_date(json_event),
+        "subtitle": normalize_text(organizer.get("name")) if isinstance(organizer, dict) else None,
+        "city": normalize_text(address.get("addressLocality")) if isinstance(address, dict) else None,
+        "address": normalize_text(address.get("streetAddress")) if isinstance(address, dict) else None,
+        "venue": normalize_text(location.get("name")) if isinstance(location, dict) else None,
+        "image": image,
+    }
 
 
 def build_kiwol_event_from_item(item, session=None):
@@ -667,7 +794,7 @@ def build_kiwol_event_from_item(item, session=None):
     city = normalize_text(address_data.get("addressLocality")) if isinstance(address_data, dict) else None
     organizer = json_event.get("organizer") if isinstance(json_event, dict) else {}
     organizer_name = normalize_text(organizer.get("name")) if isinstance(organizer, dict) else None
-    products = extract_kiwol_products_from_jsonld(json_event or {}) or extract_products_from_dom(soup, source)
+    products = extract_products_from_jsonld(json_event or {}, source) or extract_products_from_dom(soup, source)
     event_date = format_kiwol_event_date(json_event or {}, item.get("list_date"))
     image = extract_event_image(soup, base_url=KIWOL_BASE_URL)
     all_text = "\n".join(lines)
@@ -684,16 +811,28 @@ def build_event_from_item(item, session=None):
     slug = item.get("slug")
     external_id = item.get("external_id")
     html = fetch_html(url, session=session)
-    soup = remove_noise(BeautifulSoup(html, "html.parser"))
+    raw_soup = BeautifulSoup(html, "html.parser")
+    if bizouk_page_needs_rendering(raw_soup):
+        try:
+            raw_soup = BeautifulSoup(fetch_rendered_bizouk_html(url), "html.parser")
+        except (subprocess.SubprocessError, OSError):
+            pass
+    json_event = extract_jsonld_event(raw_soup)
+    structured = jsonld_event_fields(json_event)
+    soup = remove_noise(raw_soup)
     lines = lines_from_soup(soup)
     header = extract_header_fields(soup)
     contact = extract_contact_info(soup, lines)
-    products = extract_products_from_dom(soup, source)
+    products = extract_products_from_jsonld(json_event or {}, source) or extract_products_from_dom(soup, source)
     title = soup.title.get_text(" ", strip=True) if soup.title else url
-    name = header["name"] or normalize_text(title)
-    image = extract_event_image(soup, base_url=BIZOUK_BASE_URL)
-    description = extract_description(soup, lines)
-    return {"source": source, "event_url": url, "event_url_normalized": normalize_event_url(url, source), "event_slug": slug, "event_external_id": external_id, "region": region, "name": name, "subtitle": header.get("subtitle"), "description": description, "event_date": header.get("event_date"), "city": header.get("city"), "address": header.get("address"), "contact_phone": contact["contact_phone"], "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": image, "products": products, "score": score_event(name, region, products, contact, bool(image), header.get("event_date"))}
+    name = structured.get("name") or header["name"] or normalize_text(title)
+    image = structured.get("image") or extract_event_image(soup, base_url=BIZOUK_BASE_URL)
+    description = structured.get("description") or extract_description(soup, lines)
+    event_date = structured.get("event_date") or header.get("event_date")
+    city = structured.get("city") or header.get("city")
+    address = structured.get("address") or structured.get("venue") or header.get("address")
+    subtitle = structured.get("subtitle") or header.get("subtitle")
+    return {"source": source, "event_url": url, "event_url_normalized": normalize_event_url(url, source), "event_slug": slug, "event_external_id": external_id, "region": region, "name": name, "subtitle": subtitle, "description": description, "event_date": event_date, "city": city, "address": address, "contact_phone": contact["contact_phone"], "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": image, "products": products, "score": score_event(name, region, products, contact, bool(image), event_date)}
 
 
 def worker(item):

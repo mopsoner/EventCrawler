@@ -10,6 +10,10 @@ class SourceProfile:
     event_url_re: re.Pattern
     event_link_selectors: tuple[str, ...]
     event_path_marker: str
+    product_selectors: tuple[str, ...] = ()
+    product_name_selectors: tuple[str, ...] = ()
+    price_selectors: tuple[str, ...] = ()
+    availability_selectors: tuple[str, ...] = ()
 
     def parse_event_ref(self, href: str | None):
         match = self.event_url_re.search(href or "")
@@ -40,6 +44,10 @@ SOURCE_PROFILES = {
         event_url_re=re.compile(r"/events/details/(?P<slug>[^/]+)/(?P<id>\d+)"),
         event_link_selectors=("a[href*='/events/details/']",),
         event_path_marker="/events/details/",
+        product_selectors=("[class*='ticket']", "[class*='billet']", "[data-ticket-id]", "[data-product-id]"),
+        product_name_selectors=("[class*='name']", "[class*='title']", "h3", "h4", "strong"),
+        price_selectors=("[class*='price']", "[data-price]"),
+        availability_selectors=("[class*='status']", "[class*='availability']", "button", "input"),
     ),
     "kiwol": SourceProfile(
         key="kiwol",
