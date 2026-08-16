@@ -9,11 +9,20 @@ const LOG_PATH = path.join(DATA_DIR, 'booking.log');
 const SCREEN_DIR = path.join(DATA_DIR, 'booking_screens');
 const FAILURE_DIR = path.join(DATA_DIR, 'booking_failures');
 
-const DEFAULT_FIRST_NAME = (process.env.BOOKING_FIRST_NAME || 'Prénom').trim() || 'Prénom';
-const DEFAULT_LAST_NAME = (process.env.BOOKING_LAST_NAME || 'Nom').trim() || 'Nom';
-const DEFAULT_FULL_NAME = (process.env.BOOKING_FULL_NAME || `${DEFAULT_FIRST_NAME} ${DEFAULT_LAST_NAME}`).trim() || `${DEFAULT_FIRST_NAME} ${DEFAULT_LAST_NAME}`;
-const DEFAULT_PHONE = (process.env.BOOKING_PHONE || '0600000000').trim() || '0600000000';
-const DEFAULT_GENDER = (process.env.BOOKING_GENDER || 'Homme').trim() || 'Homme';
+function storedBookingProfile() {
+  try {
+    const config = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'config.json'), 'utf8'));
+    return config && typeof config.booking_profile === 'object' ? config.booking_profile : {};
+  } catch {
+    return {};
+  }
+}
+const STORED_BOOKING_PROFILE = storedBookingProfile();
+const DEFAULT_FIRST_NAME = (process.env.BOOKING_FIRST_NAME || STORED_BOOKING_PROFILE.first_name || 'Prénom').trim() || 'Prénom';
+const DEFAULT_LAST_NAME = (process.env.BOOKING_LAST_NAME || STORED_BOOKING_PROFILE.last_name || 'Nom').trim() || 'Nom';
+const DEFAULT_FULL_NAME = (process.env.BOOKING_FULL_NAME || STORED_BOOKING_PROFILE.full_name || `${DEFAULT_FIRST_NAME} ${DEFAULT_LAST_NAME}`).trim() || `${DEFAULT_FIRST_NAME} ${DEFAULT_LAST_NAME}`;
+const DEFAULT_PHONE = (process.env.BOOKING_PHONE || STORED_BOOKING_PROFILE.phone || '0600000000').trim() || '0600000000';
+const DEFAULT_GENDER = (process.env.BOOKING_GENDER || STORED_BOOKING_PROFILE.gender || 'Homme').trim() || 'Homme';
 const DEFAULT_HEADLESS = headlessFromEnv('PLAYWRIGHT_HEADLESS', true);
 const DEFAULT_SLOWMO = envNumber('PLAYWRIGHT_SLOWMO', 200);
 const SCREENSHOTS_ENABLED = process.env.PLAYWRIGHT_SCREENSHOTS === '1';
@@ -121,38 +130,186 @@ async function saveFailureReport(page, report) {
       html_excerpt: htmlExcerpt,
       visible_text_excerpt: visibleText,
       tried_selectors: report.tried_selectors || [],
+      detected_product_candidates: report.detected_product_candidates || [],
+      matched_container_text: report.matched_container_text || null,
       created_at: new Date().toISOString(),
     };
     const name = `${Date.now()}-${slugify(report.step_name || report.intent || 'failure')}.json`;
     fs.writeFileSync(path.join(FAILURE_DIR, name), JSON.stringify(payload, null, 2), 'utf8');
   } catch {}
 }
-async function addTicketQuantity(page, productName, qty) {
-  const target = page.getByText(productName, { exact: false }).first();
-  await target.waitFor({ timeout: 15000 });
-  const container = target.locator('xpath=ancestor::div[3]').first();
-  const plusSelectors = selectorsFor('quantity_plus', [
-    '.qty-btn.qty-plus', '.qty-plus', "button:has-text('+')", "a:has-text('+')", "[role='button']:has-text('+')", "button:has-text('Ajouter')", "button:has-text('Add')",
-  ]);
-  let plus = null;
-  for (const sel of plusSelectors) {
+const IGNORED_PRODUCT_WORDS = new Set(['entry', 'entrance', 'entree', 'ticket', 'billet', 'invitation', 'valid', 'valable', 'until', 'jusqu', 'jusqua', 'free', 'gratuit', 'gratuite', 'with', 'avec', 'by', 'par']);
+const PRODUCT_TOKEN_ALIASES = new Map([
+  ['simple', 'single'], ['seul', 'single'], ['seule', 'single'],
+  ['boisson', 'drink'], ['consommation', 'drink'], ['conso', 'drink'],
+  ['offert', 'free'], ['offerte', 'free'], ['offerts', 'free'], ['offertes', 'free'],
+  ['21h', '9pm'], ['21', '9pm'],
+]);
+const PLUS_SELECTORS = [
+  "button:has-text('+')", "a:has-text('+')", "[role='button']:has-text('+')",
+  "button[aria-label*='plus' i]", "button[aria-label*='add' i]", "button[aria-label*='ajouter' i]",
+  '.qty-plus', '.qty-btn.qty-plus', "[class*='plus']", "[class*='increase']",
+];
+function normalizeLabel(text) {
+  return String(text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function productMatches(candidateText, productName) {
+  const candidate = normalizeLabel(candidateText);
+  const product = normalizeLabel(productName);
+  if (!candidate || !product) return false;
+  if (candidate.includes(product) || product.includes(candidate)) return true;
+  const rawTokens = value => [...new Set(value.split(' ').filter(token => token.length > 1))];
+  const tokens = value => rawTokens(value)
+    .filter(token => !IGNORED_PRODUCT_WORDS.has(token))
+    .map(token => PRODUCT_TOKEN_ALIASES.get(token) || token);
+  const wanted = tokens(product);
+  const found = new Set(tokens(candidate));
+  if (wanted.length && wanted.filter(token => found.has(token)).length >= Math.ceil(wanted.length * 0.6)) return true;
+
+  // Some requested labels (for example "Entrance by invitation") consist
+  // entirely of generic words. In that case retain the generic overlap instead
+  // of leaving the request with no usable tokens.
+  const candidateRaw = new Set(rawTokens(candidate));
+  const genericWanted = rawTokens(product).filter(token => IGNORED_PRODUCT_WORDS.has(token));
+  return genericWanted.some(token => candidateRaw.has(token));
+}
+async function hasVisiblePlus(locator) {
+  for (const selector of PLUS_SELECTORS) {
     try {
-      const loc = container.locator(sel);
-      if (await loc.count() > 0) { plus = loc.first(); break; }
+      const matches = locator.locator(selector);
+      for (let i = 0; i < Math.min(await matches.count(), 4); i++) if (await matches.nth(i).isVisible()) return true;
     } catch {}
   }
-  if (!plus) {
-    for (const sel of plusSelectors) {
+  return false;
+}
+async function findProductContainer(page, productName) {
+  const locator = page.locator("div, article, section, li, [class*='ticket' i], [class*='product' i], [class*='tarif' i], [class*='price' i]");
+  const candidates = [];
+  const detectedCandidates = [];
+  const count = await locator.count();
+  for (let index = 0; index < Math.min(count, 1000); index++) {
+    const item = locator.nth(index);
+    try {
+      if (!(await item.isVisible())) continue;
+      const text = (await item.innerText()).replace(/\s+/g, ' ').trim();
+      if (!text) continue;
+      const normalized = normalizeLabel(text);
+      const exactContains = normalized.includes(normalizeLabel(productName));
+      const hasPlusButton = await hasVisiblePlus(item);
+      const hasPriceSignal = /€|\bfree\b|\bgratuit(?:e)?\b|\binvitation\b|\bentry\b|\bticket\b|\bbillet\b/i.test(text);
+      if (!hasPriceSignal && !hasPlusButton) continue;
+      const prices = text.match(/(?:\d+[,.]?\d*\s*€|€\s*\d+[,.]?\d*|\bfree\b|\bgratuit(?:e)?\b)/gi) || [];
+      let score = (exactContains ? 5 : 0) + (hasPlusButton ? 3 : 0) + (hasPriceSignal ? 2 : 0);
+      if (text.length > 900) score -= 5;
+      if (prices.length > 1) score -= 3;
+      const candidate = { index, text: text.slice(0, 900), score, hasPlusButton, hasPriceSignal, textLength: text.length };
+      detectedCandidates.push(candidate);
+      if (productMatches(text, productName)) candidates.push(candidate);
+    } catch {}
+  }
+  candidates.sort((a, b) => b.score - a.score || a.textLength - b.textLength);
+  detectedCandidates.sort((a, b) => b.score - a.score || a.textLength - b.textLength);
+  logLine(`Found ${detectedCandidates.length} candidate product containers; ${candidates.length} matched (scanned ${count})`);
+  if (!candidates.length) {
+    detectedCandidates.slice(0, 5).forEach((candidate, position) => {
+      logLine(`Product candidate ${position + 1}: score=${candidate.score} plus=${candidate.hasPlusButton} price=${candidate.hasPriceSignal} text=${candidate.text.slice(0, 300)}`);
+    });
+    const error = new Error(`Product not found: ${productName}`);
+    error.failureDetails = { detected_product_candidates: detectedCandidates.slice(0, 20) };
+    throw error;
+  }
+  const selected = candidates[0];
+  logLine(`Selected product candidate score=${selected.score}: ${selected.text.slice(0, 300)}`);
+  return { container: locator.nth(selected.index), selected, candidates: candidates.slice(0, 20) };
+}
+async function quantitySnapshot(container) {
+  return container.evaluate(element => {
+    const values = [];
+    element.querySelectorAll('input[type="number"], input[name*="qty" i], input[name*="quantity" i], select[name*="qty" i], select[name*="quantity" i], [class*="qty" i], [class*="quantity" i], [class*="counter" i], [aria-live]').forEach(node => {
+      if (node.matches('input[type="hidden"], [hidden], [aria-hidden="true"]')) return;
+      const value = 'value' in node ? node.value : node.textContent;
+      const match = String(value || '').trim().match(/^-?\d+(?:[,.]\d+)?$/);
+      if (match) values.push(`${node.tagName}:${match[0]}`);
+    });
+    return values;
+  }).catch(() => []);
+}
+async function currentProductQuantity(container, containerText) {
+  const snapshot = await quantitySnapshot(container);
+  for (const entry of snapshot) {
+    const value = Number(String(entry).split(':').pop());
+    if (Number.isInteger(value) && value >= 0 && value <= 100) return value;
+  }
+  // Bizouk commonly renders the controls as "− 1 +" without a dedicated
+  // quantity input, so retain a text fallback for that layout.
+  const textMatch = String(containerText || '').match(/[−–-]\s*(\d+)\s*\+/);
+  return textMatch ? Number(textMatch[1]) : null;
+}
+async function addTicketQuantity(page, match, productName, qty) {
+  const plusSelectors = selectorsFor('quantity_plus', PLUS_SELECTORS);
+  let searchRoot = match.container;
+  let plus = null;
+  let clickedSelector = null;
+  for (let ancestor = 0; ancestor < 5 && !plus; ancestor++) {
+    for (const selector of plusSelectors) {
       try {
-        const loc = page.locator(sel);
-        if (await loc.count() > 0) { plus = loc.first(); break; }
+        const options = searchRoot.locator(selector);
+        for (let i = 0; i < Math.min(await options.count(), 5); i++) {
+          if (await options.nth(i).isVisible()) { plus = options.nth(i); clickedSelector = selector; break; }
+        }
       } catch {}
+      if (plus) break;
+    }
+    if (!plus) searchRoot = searchRoot.locator('xpath=..');
+  }
+  // A page-wide fallback is safe only when the product itself was an exact, high-confidence match.
+  if (!plus && match.selected.score >= 7 && normalizeLabel(match.selected.text).includes(normalizeLabel(productName))) {
+    for (const selector of plusSelectors) {
+      const options = page.locator(selector);
+      if (await options.count() === 1 && await options.first().isVisible()) { plus = options.first(); clickedSelector = selector; break; }
     }
   }
-  if (!plus) throw new Error(`Could not find + button for '${productName}'`);
-  for (let i = 0; i < qty; i++) {
-    await plus.click();
+  if (!plus) {
+    const error = new Error(`Plus button not found for product: ${productName}`);
+    error.failureDetails = { tried_selectors: plusSelectors, matched_container_text: match.selected.text, detected_product_candidates: match.candidates };
+    throw error;
+  }
+  logLine(`Clicking quantity selector: ${clickedSelector}`);
+  const requestedQuantity = Math.max(0, Number(qty) || 0);
+  const initialQuantity = await currentProductQuantity(match.container, match.selected.text);
+  const clicksNeeded = initialQuantity === null ? requestedQuantity : Math.max(0, requestedQuantity - initialQuantity);
+  if (initialQuantity === null) {
+    logLine(`Current product quantity not measurable; sending ${clicksNeeded} quantity click(s)`);
+  } else {
+    logLine(`Current product quantity=${initialQuantity}; requested=${requestedQuantity}; sending ${clicksNeeded} quantity click(s)`);
+    if (initialQuantity > requestedQuantity) logLine('Current product quantity exceeds requested quantity; no plus click sent');
+  }
+  for (let i = 0; i < clicksNeeded; i++) {
+    const before = await quantitySnapshot(match.container);
+    try {
+      // Bizouk's horizontally animated ticket list can leave a visible button
+      // outside Playwright's computed viewport. Dispatch the normal DOM click
+      // directly on the plus control constrained to the matched product.
+      await plus.evaluate(element => {
+        if (element.disabled || element.getAttribute('aria-disabled') === 'true') throw new Error('Plus button is disabled');
+        element.click();
+      });
+      logLine('Quantity DOM click sent');
+    } catch (domClickError) {
+      logLine(`Quantity DOM click failed (${String(domClickError.message || domClickError).split('\n')[0]}); retrying with Playwright click`);
+      try {
+        await plus.scrollIntoViewIfNeeded({ timeout: 3000 });
+        await plus.click({ timeout: 3000, force: true });
+      } catch (playwrightClickError) {
+        const error = new Error(`Plus button click failed for product: ${productName}: ${String(playwrightClickError.message || playwrightClickError).split('\n')[0]}`);
+        error.failureDetails = { tried_selectors: plusSelectors, matched_container_text: match.selected.text, detected_product_candidates: match.candidates };
+        throw error;
+      }
+    }
     await page.waitForTimeout(400);
+    const after = await quantitySnapshot(match.container);
+    if (!before.length || JSON.stringify(before) === JSON.stringify(after)) logLine('quantity click sent but counter not verified');
   }
   return plusSelectors;
 }
@@ -174,37 +331,59 @@ async function selectGender(page) {
   }
 }
 async function fillFormByLabels(page, email) {
-  const labels = await page.locator('label[for]').all();
-  for (const label of labels) {
-    const forId = await label.getAttribute('for');
-    if (!forId) continue;
-    const labelText = (await label.textContent() || '').toLowerCase().trim();
-    const input = page.locator(`[name="${forId}"], #${forId}`).first();
-    if (!(await input.count())) continue;
-    const type = (await input.getAttribute('type') || 'text').toLowerCase();
-    if (!['text', 'email', 'tel', 'number'].includes(type)) continue;
-    if (!(await input.isVisible())) continue;
-    let value = null;
-    if ((labelText.includes('first') || labelText.includes('prénom') || labelText.includes('forename') || labelText.includes('given name'))) value = DEFAULT_FIRST_NAME;
-    else if ((labelText.includes('last') || labelText.includes('name') || labelText.includes('nom') || labelText.includes('surname')) && !labelText.includes('first') && !labelText.includes('prénom')) value = DEFAULT_LAST_NAME;
-    else if (labelText.includes('full') && labelText.includes('name')) value = DEFAULT_FULL_NAME;
-    else if (labelText.includes('email') || labelText.includes('e-mail') || labelText.includes('courriel')) value = email;
-    else if (labelText.includes('phone') || labelText.includes('portable') || labelText.includes('mobile') || labelText.includes('tel') || labelText.includes('téléphone')) value = DEFAULT_PHONE;
-    if (value !== null) { try { await input.fill(value); } catch {} }
-  }
-  const groups = [
-    [DEFAULT_FIRST_NAME, ["input[name*='firstname']","input[name*='first_name']","input[id*='firstname']","input[id*='first_name']"]],
-    [DEFAULT_LAST_NAME, ["input[name*='lastname']","input[name*='last_name']","input[id*='lastname']","input[id*='last_name']"]],
-    [DEFAULT_FULL_NAME, ["input[name*='fullname']","input[name*='full_name']","input[name*='buyer_name']","input[id*='fullname']","input[id*='buyer_name']"]],
-    [email, ["input[type='email']","input[name*='email']","input[id*='email']"]],
-    [DEFAULT_PHONE, ["input[name*='phone']","input[name*='mobile']","input[name*='tel']","input[id*='phone']","input[id*='mobile']"]],
-  ];
-  for (const [val, selectors] of groups) {
-    for (const sel of selectors) {
-      try { const loc = page.locator(sel); if (await loc.count() && await loc.first().isVisible()) await loc.first().fill(val); } catch {}
+  let filledInputs = 0;
+  const fields = page.locator('input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="file"]), textarea');
+  for (let index = 0; index < await fields.count(); index++) {
+    const input = fields.nth(index);
+    try {
+      if (!(await input.isVisible())) continue;
+      const details = await input.evaluate(element => {
+        const labels = element.labels ? Array.from(element.labels) : [];
+        let label = labels.map(item => item.textContent || '').join(' ').trim();
+        if (!label) {
+          const group = element.closest('.form-group, .form-field, [class*="field" i], [class*="form" i]') || element.parentElement;
+          label = group && group.querySelector('label') ? group.querySelector('label').textContent || '' : '';
+        }
+        return {
+          label: label.replace(/\s+/g, ' ').replace(/\s*\*\s*$/, '').trim(),
+          name: element.getAttribute('name') || element.id || '',
+          placeholder: element.getAttribute('placeholder') || '',
+          type: (element.getAttribute('type') || element.tagName || 'text').toLowerCase(),
+          required: element.required || element.getAttribute('aria-required') === 'true' || /\*/.test(label),
+          value: element.value || '',
+        };
+      });
+      const hint = normalizeLabel(`${details.label} ${details.name} ${details.placeholder}`);
+      let value = null;
+      if (/\b(first name|firstname|first_name|forename|given name|prenom)\b/.test(hint)) value = DEFAULT_FIRST_NAME;
+      else if (/\b(last name|lastname|last_name|surname|nom de famille)\b/.test(hint)) value = DEFAULT_LAST_NAME;
+      else if (/\b(full name|fullname|full_name|buyer name|buyer_name|name|nom)\b/.test(hint)) value = DEFAULT_FULL_NAME;
+      else if (/\b(email|mail|courriel)\b/.test(hint)) value = email;
+      else if (/\b(phone|portable|mobile|telephone|tel)\b/.test(hint)) value = DEFAULT_PHONE;
+      else if (details.required && !details.value) value = details.label || details.placeholder || details.name || 'Required';
+      if (value !== null) {
+        if (details.type === 'number' && !/^-?\d+(?:[.,]\d+)?$/.test(value)) value = '1';
+        await input.fill(String(value));
+        filledInputs++;
+      }
+    } catch (error) {
+      logLine(`Could not fill attendee field ${index + 1}: ${String(error.message || error).split('\n')[0]}`);
     }
   }
+  const requiredSelects = page.locator('select[required], select[aria-required="true"]');
+  for (let index = 0; index < await requiredSelects.count(); index++) {
+    const select = requiredSelects.nth(index);
+    try {
+      if (!(await select.isVisible()) || await select.inputValue()) continue;
+      const option = await select.locator('option:not([disabled])').evaluateAll(items => {
+        const match = items.find(item => item.value && item.value.trim());
+        return match ? match.value : null;
+      });
+      if (option) { await select.selectOption(option); filledInputs++; }
+    } catch {}
+  }
   await selectGender(page);
+  logLine(`Filled attendee form: first_name=${DEFAULT_FIRST_NAME} last_name=${DEFAULT_LAST_NAME} inputs=${filledInputs} URL=${page.url()}`);
 }
 async function selectRadioDefaults(page) {
   try {
@@ -281,17 +460,27 @@ async function runPrepare(eventUrl, ticketCount, email, productName) {
   try {
     lastStepName = 'load_event'; lastIntent = 'load_event';
     await page.goto(eventUrl, { timeout: 60000 });
-    await page.waitForLoadState('networkidle');
+    // Bizouk keeps analytics and other background requests alive, so reaching
+    // networkidle is an optimization rather than a requirement for product lookup.
+    try {
+      await page.waitForLoadState('networkidle', { timeout: 10000 });
+    } catch {
+      logLine(`Network idle timeout after page load; continuing with DOM at URL=${page.url()}`);
+    }
     await acceptCookies(page);
-    const plusSelectors = await addTicketQuantity(page, productName, ticketCount);
-    lastStepName = 'add_ticket_quantity'; lastIntent = 'quantity_plus'; lastSelectors = plusSelectors;
+    logLine(`Loaded URL=${page.url()} | Title=${await page.title().catch(() => '')} | Requested product=${productName}`);
+    lastStepName = 'find_product'; lastIntent = 'product_match'; lastSelectors = [];
+    const productMatch = await findProductContainer(page, productName);
+    lastStepName = 'add_ticket_quantity'; lastIntent = 'quantity_plus'; lastSelectors = selectorsFor('quantity_plus', PLUS_SELECTORS);
+    const plusSelectors = await addTicketQuantity(page, productMatch, productName, ticketCount);
     await screenshot(page, `${prefix}-02-qty`);
-    const checkoutSelectors = selectorsFor('checkout', ["button:has-text('Continue booking')", "button:has-text('Continuer la réservation')", "button:has-text('Book now')", "button:has-text('Proceed to checkout')", "button:has-text('Commander')"]);
+    const checkoutSelectors = selectorsFor('checkout', ["button:has-text('Continue booking')", "button:has-text('Continuer la réservation')", "button:has-text('Book now')", "button:has-text('Proceed to checkout')", "button:has-text('Commander')", "button:has-text('Continuer')", "button:has-text('Continuer ma commande')", "button:has-text('Réserver')", "button:has-text('Je réserve')", "button:has-text('Commander gratuitement')", "button:has-text('Valider')", "a:has-text('Continuer')", "a[href*='checkout']", "a[href*='cart']", "a[href*='commande']"]);
     lastStepName = 'proceed_checkout'; lastIntent = 'checkout'; lastSelectors = checkoutSelectors;
     const proceeded = await clickFirstVisible(page, checkoutSelectors, 10000);
     if (!proceeded) throw new Error('Could not find checkout button');
     await page.waitForTimeout(2000);
     try { await page.waitForLoadState('networkidle', { timeout: 15000 }); } catch {}
+    logLine(`URL after checkout click: ${page.url()}`);
     for (let step = 1; step <= 8; step++) {
       await fillFormByLabels(page, email);
       await selectRadioDefaults(page);
@@ -325,7 +514,8 @@ async function runPrepare(eventUrl, ticketCount, email, productName) {
     await saveFailureReport(page, { booking_started_at: startedAt, event_url: eventUrl, product_name: productName, step_name: lastStepName, intent: lastIntent, error_text: msg, tried_selectors: lastSelectors });
     writeState({ running: false, status: 'submitted_unconfirmed', finished_at: new Date().toISOString(), last_error: msg, confirmation_text: null });
   } catch (err) {
-    await saveFailureReport(page, { booking_started_at: startedAt, event_url: eventUrl, product_name: productName, step_name: lastStepName, intent: lastIntent, error_text: String(err), tried_selectors: lastSelectors });
+    const details = err.failureDetails || {};
+    await saveFailureReport(page, { booking_started_at: startedAt, event_url: eventUrl, product_name: productName, step_name: lastStepName, intent: lastIntent, error_text: err.message || String(err), tried_selectors: lastSelectors, ...details });
     writeState({ running: false, status: 'failed', finished_at: new Date().toISOString(), last_error: String(err), confirmation_text: null });
     logLine(`Flow failed: ${err}`);
     throw err;
