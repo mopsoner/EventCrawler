@@ -67,7 +67,11 @@ function initDataTable(tableId, options = {}) {
       if (!f.el) return true;
       const wanted = f.el.value;
       if (!wanted) return true;
-      return String(row.dataset[f.dataset] || '') === wanted;
+      const actual = String(row.dataset[f.dataset] || '');
+      if (typeof f.matches === 'function') {
+        return f.matches(wanted, actual, row);
+      }
+      return actual === wanted;
     });
   }
 
