@@ -371,7 +371,13 @@ async function runPrepare(eventUrl, ticketCount, email, productName) {
   try {
     lastStepName = 'load_event'; lastIntent = 'load_event';
     await page.goto(eventUrl, { timeout: 60000 });
-    await page.waitForLoadState('networkidle');
+    // Bizouk keeps analytics and other background requests alive, so reaching
+    // networkidle is an optimization rather than a requirement for product lookup.
+    try {
+      await page.waitForLoadState('networkidle', { timeout: 10000 });
+    } catch {
+      logLine(`Network idle timeout after page load; continuing with DOM at URL=${page.url()}`);
+    }
     await acceptCookies(page);
     logLine(`Loaded URL=${page.url()} | Title=${await page.title().catch(() => '')} | Requested product=${productName}`);
     lastStepName = 'find_product'; lastIntent = 'product_match'; lastSelectors = [];
