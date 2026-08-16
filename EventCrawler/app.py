@@ -20,6 +20,7 @@ from ai_automation import enrich_event_labels, suggest_selector_repair
 from config_store import load_config, save_config, slugify_region_name
 from security import UnsafeURL, credentials_match, validate_external_url
 from storage import atomic_write_json, atomic_write_text, connect_sqlite, interprocess_lock
+from opportunity_scoring import ensure_opportunity_schema
 
 DB_PATH = "data/eventcrawler.sqlite"
 STATUS_PATH = Path("data/crawl_status.json")
@@ -262,6 +263,7 @@ def init_db():
         );
         '''
     )
+    ensure_opportunity_schema(cur)
     ensure_column(cur, "events", "event_external_id", "event_external_id TEXT")
     ensure_column(cur, "events", "event_slug", "event_slug TEXT")
     ensure_column(cur, "events", "contact_website", "contact_website TEXT")
@@ -276,6 +278,9 @@ def init_db():
     ensure_column(cur, "products", "is_early_bird", "is_early_bird INTEGER DEFAULT 0")
     ensure_column(cur, "products", "early_bird_confidence", "early_bird_confidence TEXT")
     ensure_column(cur, "products", "early_bird_reason", "early_bird_reason TEXT")
+    ensure_column(cur, "products", "capacity", "capacity INTEGER")
+    ensure_column(cur, "products", "product_kind", "product_kind TEXT")
+    ensure_column(cur, "products", "unit_price", "unit_price REAL")
     c.commit()
     c.close()
 
@@ -799,8 +804,35 @@ def list_opportunities(limit=None):
         recent = is_recent(r.get("event_first_seen"), hours=24)
         r["is_recent"] = recent
         r["is_early_free_opportunity"] = bool(r.get("is_free")) and r.get("is_available") in (1, True) and recent
+        r["opportunity_type"] = "FREE"
+        r["reference_price"] = None
+        r["saving_amount"] = None
+        r["saving_percent"] = None
+        r["opportunity_reason"] = "Billet gratuit disponible" if r["is_early_free_opportunity"] else "Billet gratuit"
+        r["opportunity_score"] = 100 if r["is_early_free_opportunity"] else 70
         rows.append(r)
-    rows.sort(key=lambda x: (x["is_early_free_opportunity"], x.get("score", 0), x.get("event_first_seen") or ""), reverse=True)
+    c = conn()
+    changed = [dict(r) for r in c.execute('''
+        SELECT po.opportunity_type, po.reference_price, po.current_price,
+               po.saving_amount, po.saving_percent, po.score AS opportunity_score,
+               po.confidence AS opportunity_confidence, po.reason AS opportunity_reason,
+               po.first_detected_at, po.last_detected_at,
+               p.*, e.name AS event_name, e.subtitle AS event_subtitle,
+               e.description AS event_description, e.event_date, e.region, e.event_url,
+               e.first_seen_at AS event_first_seen, e.score, e.id AS event_id,
+               e.manual_status, e.is_watchlisted
+        FROM price_opportunities po
+        JOIN products p ON p.id=po.product_id
+        JOIN events e ON e.id=po.event_id
+        WHERE po.is_active=1
+        ORDER BY po.score DESC, po.last_detected_at DESC
+    ''').fetchall()]
+    c.close()
+    for row in decorate_rows(changed):
+        row["is_recent"] = is_recent(row.get("last_detected_at"), hours=24)
+        row["is_early_free_opportunity"] = False
+        rows.append(row)
+    rows.sort(key=lambda x: (x.get("opportunity_score", 0), x.get("last_detected_at") or x.get("event_first_seen") or ""), reverse=True)
     return rows[:limit] if limit else rows
 
 
