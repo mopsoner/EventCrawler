@@ -1,10 +1,28 @@
 import json
 import os
+import sqlite3
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
 import fcntl
+
+
+SQLITE_BUSY_TIMEOUT_MS = 30_000
+
+
+def connect_sqlite(path):
+    """Open an application database connection configured for concurrent use."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path, timeout=SQLITE_BUSY_TIMEOUT_MS / 1000)
+    connection.row_factory = sqlite3.Row
+    connection.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    connection.execute("PRAGMA foreign_keys=ON")
+    # The crawler writes from a separate process while Flask serves reads. WAL
+    # keeps those reads from being rejected by the writer's transaction.
+    connection.execute("PRAGMA journal_mode=WAL")
+    return connection
 
 
 def atomic_write_text(path, text, mode=0o600):

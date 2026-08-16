@@ -2,6 +2,7 @@ import base64
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -84,6 +85,30 @@ class WebSecurityTests(unittest.TestCase):
         self.assertEqual(api_response.headers["Cache-Control"], "no-store")
         self.assertEqual(api_response.json["logs"]["crawl"][-1], "page failed")
         self.assertEqual(len(api_response.json["workers"]), 3)
+
+    def test_database_reads_continue_during_crawler_write(self):
+        writer = self.module.conn()
+        reader_result = {}
+        writer.execute(
+            "INSERT OR IGNORE INTO events(event_url, name) VALUES (?, ?)",
+            ("https://www.bizouk.com/events/details/concurrent/1", "Concurrent"),
+        )
+
+        def read_event_count():
+            reader = self.module.conn()
+            try:
+                reader_result["count"] = reader.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+            finally:
+                reader.close()
+
+        thread = threading.Thread(target=read_event_count)
+        thread.start()
+        thread.join(timeout=2)
+        writer.rollback()
+        writer.close()
+
+        self.assertFalse(thread.is_alive(), "database read waited for an uncommitted crawler write")
+        self.assertIn("count", reader_result)
 
     def test_log_tail_is_bounded(self):
         path = Path("data/bounded.log")

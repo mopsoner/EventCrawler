@@ -15,7 +15,7 @@ from ai_automation import enrich_event_labels
 from config_store import load_config
 from source_profiles import SOURCE_PROFILES, detect_source, normalize_event_url, parse_event_ref
 from security import validate_external_url
-from storage import atomic_write_json
+from storage import atomic_write_json, connect_sqlite
 
 DB_PATH = "data/eventcrawler.sqlite"
 BIZOUK_BASE_URL = "https://www.bizouk.com"
@@ -46,10 +46,7 @@ def enabled_regions():
 
 
 def conn():
-    Path("data").mkdir(parents=True, exist_ok=True)
-    c = sqlite3.connect(DB_PATH)
-    c.row_factory = sqlite3.Row
-    return c
+    return connect_sqlite(DB_PATH)
 
 
 def ensure_column(cur, table, column, ddl):

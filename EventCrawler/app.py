@@ -17,7 +17,7 @@ from flask import Flask, abort, jsonify, redirect, render_template, request, ses
 from ai_automation import enrich_event_labels, suggest_selector_repair
 from config_store import load_config, save_config, slugify_region_name
 from security import UnsafeURL, credentials_match, validate_external_url
-from storage import atomic_write_json, atomic_write_text, interprocess_lock
+from storage import atomic_write_json, atomic_write_text, connect_sqlite, interprocess_lock
 
 DB_PATH = "data/eventcrawler.sqlite"
 STATUS_PATH = Path("data/crawl_status.json")
@@ -129,11 +129,7 @@ def internal_redirect(endpoint, **values):
 
 
 def conn():
-    Path("data").mkdir(parents=True, exist_ok=True)
-    c = sqlite3.connect(DB_PATH)
-    c.row_factory = sqlite3.Row
-    c.execute("PRAGMA foreign_keys=ON")
-    return c
+    return connect_sqlite(DB_PATH)
 
 
 def ensure_column(cur, table, column, ddl):
