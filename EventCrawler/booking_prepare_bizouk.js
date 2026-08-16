@@ -258,18 +258,21 @@ async function addTicketQuantity(page, match, productName, qty) {
   for (let i = 0; i < qty; i++) {
     const before = await quantitySnapshot(match.container);
     try {
-      await plus.scrollIntoViewIfNeeded({ timeout: 5000 });
-      await plus.click({ timeout: 5000 });
-    } catch (clickError) {
       // Bizouk's horizontally animated ticket list can leave a visible button
-      // outside Playwright's computed viewport even after it has been scrolled.
-      // A DOM click still dispatches the site's normal click handler and is
-      // constrained to the plus control selected inside the matched product.
-      logLine(`Regular quantity click failed (${clickError.message}); retrying with DOM click`);
+      // outside Playwright's computed viewport. Dispatch the normal DOM click
+      // directly on the plus control constrained to the matched product.
+      await plus.evaluate(element => {
+        if (element.disabled || element.getAttribute('aria-disabled') === 'true') throw new Error('Plus button is disabled');
+        element.click();
+      });
+      logLine('Quantity DOM click sent');
+    } catch (domClickError) {
+      logLine(`Quantity DOM click failed (${String(domClickError.message || domClickError).split('\n')[0]}); retrying with Playwright click`);
       try {
-        await plus.evaluate(element => element.click());
-      } catch (domClickError) {
-        const error = new Error(`Plus button click failed for product: ${productName}: ${domClickError.message}`);
+        await plus.scrollIntoViewIfNeeded({ timeout: 3000 });
+        await plus.click({ timeout: 3000, force: true });
+      } catch (playwrightClickError) {
+        const error = new Error(`Plus button click failed for product: ${productName}: ${String(playwrightClickError.message || playwrightClickError).split('\n')[0]}`);
         error.failureDetails = { tried_selectors: plusSelectors, matched_container_text: match.selected.text, detected_product_candidates: match.candidates };
         throw error;
       }
