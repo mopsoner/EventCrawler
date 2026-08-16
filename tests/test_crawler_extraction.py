@@ -138,7 +138,7 @@ class BizoukExtractionTests(unittest.TestCase):
         lines = [line.strip() for line in soup.get_text("\n", strip=True).splitlines()]
         self.assertIn("description complète", extract_description(soup, lines))
         contact = extract_contact_info(soup, lines)
-        self.assertEqual(contact["contact_phone"], "+33690805888")
+        self.assertEqual(contact["contact_phone"], "+590690805888")
         self.assertEqual(contact["contact_website"], "https://organizer.example")
 
     def test_nested_aggregate_offer_is_extracted(self):

@@ -63,6 +63,14 @@ def normalize_guadeloupe_city(value):
 
 
 def normalize_phone(value):
+    """Return an E.164 number using the prefix as the source of truth.
+
+    Bizouk does not reliably expose a phone country alongside the contact. A
+    local ``0690`` number is nevertheless unambiguous: it belongs to the
+    Guadeloupe mobile range and must use country code +590. Other French local
+    numbers retain the existing +33 conversion; already international +33 and
+    +590 values are preserved after punctuation cleanup.
+    """
     value = clean_text(value)
     if not value:
         return None
@@ -72,12 +80,13 @@ def normalize_phone(value):
     digits = re.sub(r"\D", "", raw)
     if raw.startswith("+"):
         normalized = "+" + digits
+    elif len(digits) == 10 and digits.startswith("0690"):
+        normalized = "+590" + digits[1:]
     elif len(digits) == 10 and digits.startswith("0"):
         normalized = "+33" + digits[1:]
     else:
         return None
-    # French numbering plan (metropolitan and overseas mobile/fixed numbers).
-    return normalized if re.fullmatch(r"\+33\d{9}", normalized) else None
+    return normalized if re.fullmatch(r"(?:\+33\d{9}|\+590\d{9})", normalized) else None
 
 
 MONTHS = {name: n for n, names in enumerate(((), ("janvier", "january"), ("février", "fevrier", "february"), ("mars", "march"), ("avril", "april"), ("mai", "may"), ("juin", "june"), ("juillet", "july"), ("août", "aout", "august"), ("septembre", "september"), ("octobre", "october"), ("novembre", "november"), ("décembre", "decembre", "december"))) for name in names}
@@ -153,7 +162,7 @@ def validate_bizouk_event(event):
     low_description = description.casefold()
     if "<html" in low_description or any(x in low_description for x in NAVIGATION_MARKERS):
         errors.append("description contains page navigation or HTML")
-    if event.get("contact_phone") and not re.fullmatch(r"\+33\d{9}", event["contact_phone"]):
+    if event.get("contact_phone") and not re.fullmatch(r"(?:\+33\d{9}|\+590\d{9})", event["contact_phone"]):
         errors.append("invalid phone")
     if errors:
         raise EventValidationError(errors)

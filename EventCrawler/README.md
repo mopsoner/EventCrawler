@@ -81,6 +81,9 @@ local wall times are normalized before persistence; rejected pages remain in
 `crawl_errors`. The JSON quality summary for each run is stored in
 `crawl_runs.notes`. The additive `events.event_end_date` column stores an ISO 8601
 end date when Bizouk supplies one and is created automatically by `init_db()`.
+Local mobile numbers beginning with `0690` are stored with Guadeloupe's `+590`
+country code; other French local numbers use `+33`. Existing international
+`+590` and `+33` numbers are kept in E.164 form.
 
 ```bash
 cd EventCrawler

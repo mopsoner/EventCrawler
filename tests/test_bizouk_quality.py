@@ -58,9 +58,17 @@ class BizoukQualityTests(unittest.TestCase):
 
     def test_phone_cleanup_and_missing_phone(self):
         self.assertEqual(normalize_phone("'+33615285999"), "+33615285999")
-        self.assertEqual(normalize_phone("0690 80.58-88"), "+33690805888")
+        self.assertEqual(normalize_phone("0690 80.58-88"), "+590690805888")
+        self.assertEqual(normalize_phone("06 15 28 59 99"), "+33615285999")
+        self.assertEqual(normalize_phone("0590 80 58 88"), "+33590805888")
+        self.assertEqual(normalize_phone("00 590 690 80 58 88"), "+590690805888")
+        self.assertEqual(normalize_phone("+590 690 80 58 88"), "+590690805888")
         self.assertIsNone(normalize_phone(None))
         self.assertIsNone(normalize_phone("12345"))
+
+    def test_validation_accepts_guadeloupe_e164_phone(self):
+        event = {"event_url": "https://www.bizouk.com/events/details/good/12", "event_external_id": "12", "name": "Good event", "event_date": "2026-08-16T15:00-04:00", "city": "Le Gosier", "description": "Une fête", "contact_phone": "+590690805888"}
+        self.assertIs(validate_bizouk_event(event), event)
 
     def test_guadeloupe_wall_time_gets_real_offset(self):
         self.assertEqual(normalize_event_date("Sunday August 16 2026 at 3:00 pm", "guadeloupe"), "2026-08-16T15:00-04:00")
