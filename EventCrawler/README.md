@@ -5,6 +5,8 @@ Bizouk/Kiwol event monitor for Raspberry.
 EventCrawler crawls event listing pages, stores events/products in SQLite, and records product history so you can spot price, free-ticket, and availability changes over time.
 
 ## Install
+Python 3.10 or newer is supported.
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mopsoner/EventCrawler/main/install.sh -o install.sh && chmod +x install.sh && ./install.sh
 ```
