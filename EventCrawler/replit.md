@@ -34,7 +34,7 @@ The app runs via the **Start application** workflow:
 ```
 python app.py
 ```
-It listens on `0.0.0.0:5000`.
+It listens on `0.0.0.0:5080` by default.
 
 ## Key Features
 
@@ -70,4 +70,4 @@ Handles the complete Bizouk booking flow automatically:
 ## Deployment
 
 Deployed as a VM target (always-on) because the app uses a persistent background scheduler thread.
-Run command: `gunicorn --bind=0.0.0.0:5000 --reuse-port --workers=1 app:app`
+Run command: `gunicorn --bind=0.0.0.0:5080 --reuse-port --workers=1 app:app`

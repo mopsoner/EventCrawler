@@ -1187,4 +1187,4 @@ if __name__ == "__main__":
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
     create_app(start_scheduler=os.getenv("EVENTCRAWLER_EMBEDDED_SCHEDULER", "0") == "1")
     LOGGER.warning("Identifiant administrateur: %s; mot de passe dans data/admin_password", app.config["ADMIN_USERNAME"])
-    app.run(host=os.getenv("EVENTCRAWLER_HOST", "127.0.0.1"), port=int(os.getenv("PORT", "5000")), debug=False)
+    app.run(host=os.getenv("EVENTCRAWLER_HOST", "127.0.0.1"), port=int(os.getenv("PORT", "5080")), debug=False)

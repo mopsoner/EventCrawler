@@ -18,7 +18,8 @@ cd ~/EventCrawler && chmod +x run.sh && ./run.sh
 
 Au premier lancement, un mot de passe administrateur aléatoire est créé dans
 `data/admin_password` (permissions `0600`). Connectez-vous avec l'utilisateur
-`admin` et ce mot de passe. Le serveur écoute uniquement sur `127.0.0.1`; utilisez
+`admin` et ce mot de passe. Par défaut, le serveur écoute uniquement sur
+`127.0.0.1:5080`; utilisez
 un tunnel SSH ou un reverse proxy HTTPS authentifié pour un accès distant.
 
 Les variables `EVENTCRAWLER_ADMIN_USERNAME`, `EVENTCRAWLER_ADMIN_PASSWORD`,
