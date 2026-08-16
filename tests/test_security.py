@@ -73,6 +73,23 @@ class WebSecurityTests(unittest.TestCase):
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertEqual(response.json["booking_profile"], {"configured": True})
 
+    def test_logs_page_and_api_are_available_and_not_cached(self):
+        Path("data/crawl.log").write_text("worker started\npage failed\n", encoding="utf-8")
+        response = self.client.get("/logs", headers={"Authorization": self.auth})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Logs & workers", response.data)
+        self.assertIn(b"page failed", response.data)
+        api_response = self.client.get("/api/logs", headers={"Authorization": self.auth})
+        self.assertEqual(api_response.status_code, 200)
+        self.assertEqual(api_response.headers["Cache-Control"], "no-store")
+        self.assertEqual(api_response.json["logs"]["crawl"][-1], "page failed")
+        self.assertEqual(len(api_response.json["workers"]), 3)
+
+    def test_log_tail_is_bounded(self):
+        path = Path("data/bounded.log")
+        path.write_text("\n".join(f"line {number}" for number in range(20)), encoding="utf-8")
+        self.assertEqual(self.module.tail_log(path, line_limit=3), ["line 17", "line 18", "line 19"])
+
     def test_post_requires_csrf(self):
         response = self.client.post("/scheduler/start", headers={"Authorization": self.auth})
         self.assertEqual(response.status_code, 403)

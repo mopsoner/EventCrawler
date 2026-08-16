@@ -45,6 +45,9 @@ BOOKING_LOCK = threading.Lock()
 PENDING_BOOKINGS = {}
 PENDING_BOOKINGS_LOCK = threading.Lock()
 BOOKING_APPROVAL_SECONDS = 300
+LOG_FILES = {"crawl": Path("data/crawl.log"), "booking": Path("data/booking_runner.log")}
+LOG_TAIL_LINES = 200
+LOG_TAIL_BYTES = 256 * 1024
 
 
 def utc_now():
@@ -114,7 +117,7 @@ def secure_response(response):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "same-origin")
     response.headers.setdefault("Content-Security-Policy", "default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'")
-    if request.path.startswith("/api/") or request.path in {"/config", "/tickets", "/failures"}:
+    if request.path.startswith("/api/") or request.path in {"/config", "/tickets", "/failures", "/logs"}:
         response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -753,6 +756,56 @@ def list_crawl_runs(limit=30):
     return rows
 
 
+def list_crawl_errors(limit=200):
+    """Return recent crawler errors with their run context for the log console."""
+    c = conn()
+    rows = [dict(r) for r in c.execute(
+        '''SELECT ce.*, cr.status AS run_status, cr.regions, cr.started_at
+           FROM crawl_errors ce LEFT JOIN crawl_runs cr ON cr.id = ce.crawl_run_id
+           ORDER BY ce.id DESC LIMIT ?''', (limit,)
+    ).fetchall()]
+    c.close()
+    for row in rows:
+        row["created_ago"] = time_ago(row.get("created_at"))
+    return rows
+
+
+def tail_log(path, line_limit=LOG_TAIL_LINES, byte_limit=LOG_TAIL_BYTES):
+    """Read a bounded tail so a large worker log cannot exhaust the web process."""
+    path = Path(path)
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - byte_limit))
+            data = handle.read(byte_limit)
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        LOGGER.warning("Impossible de lire le log %s: %s", path, exc)
+        return [f"[log illisible: {exc}]"]
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    if size > byte_limit and lines:
+        lines = lines[1:]
+    return lines[-line_limit:]
+
+
+def worker_statuses():
+    crawl_state = read_crawl_status()
+    scheduler_state = read_scheduler_state()
+    booking_state = read_booking_state()
+    crawl_running = crawl_is_running()
+    return [
+        {"name": "Crawler", "running": crawl_running, "status": "running" if crawl_running else (crawl_state.get("status") or "idle"), "detail": ", ".join(crawl_state.get("regions") or []) or "Aucune région", "updated_at": crawl_state.get("finished_at") or crawl_state.get("started_at")},
+        {"name": "Scheduler", "running": bool(SCHEDULER_THREAD and SCHEDULER_THREAD.is_alive()), "status": "enabled" if scheduler_state.get("enabled") else "disabled", "detail": scheduler_state.get("current_job") or "Aucune tâche", "updated_at": scheduler_state.get("updated_at")},
+        {"name": "Booking", "running": booking_is_running(), "status": booking_state.get("status") or "idle", "detail": booking_state.get("product_name") or "Aucune réservation", "updated_at": booking_state.get("finished_at") or booking_state.get("started_at")},
+    ]
+
+
+def logs_payload():
+    return {"workers": worker_statuses(), "errors": list_crawl_errors(), "logs": {name: tail_log(path) for name, path in LOG_FILES.items()}}
+
+
 def list_organizers():
     events = list_events()
     c = conn()
@@ -989,6 +1042,11 @@ def failures():
     return render_template("failures.html", failures=list_failures(), rules=list_selector_rules())
 
 
+@app.route("/logs")
+def logs():
+    return render_template("logs.html", **logs_payload())
+
+
 @app.route("/failures/<int:failure_id>/reanalyze", methods=["POST"])
 def reanalyze_failure(failure_id):
     c = conn()
@@ -1145,6 +1203,11 @@ def api_opportunities():
 @app.route("/api/activity")
 def api_activity():
     return jsonify(list_activity())
+
+
+@app.route("/api/logs")
+def api_logs():
+    return jsonify(logs_payload())
 
 
 @app.route("/api/config")
