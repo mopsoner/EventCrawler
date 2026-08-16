@@ -4,8 +4,8 @@
 <section class="page-head">
   <div>
     <div class="eyebrow">Scoring</div>
-    <h1>Early opportunities</h1>
-    <p>Produits gratuits ou disponibles classés en priorité, avec date d’événement, date d’ajout et filtres utiles.</p>
+    <h1>Opportunités de prix</h1>
+    <p>Billets gratuits, hausses observées et prochains paliers de prix comparables.</p>
   </div>
 </section>
 <section class="panel">
@@ -38,7 +38,7 @@
   <div class="table-wrap">
     <table class="table" id="opp-table">
       <thead>
-        <tr><th data-sort="event">Event</th><th data-sort="date">Date event</th><th data-sort="added">Ajouté</th><th data-sort="region">Region</th><th data-sort="product">Product</th><th data-sort="price" data-type="number">Price</th><th data-sort="status">Status</th><th data-sort="score" data-type="number">Score</th></tr>
+        <tr><th data-sort="event">Event</th><th data-sort="date">Date event</th><th data-sort="region">Region</th><th data-sort="product">Product</th><th>Type</th><th>Référence</th><th data-sort="price" data-type="number">Prix actuel</th><th>Variation</th><th data-sort="status">Status</th><th data-sort="score" data-type="number">Score</th></tr>
       </thead>
       <tbody>
         {% for r in rows %}
@@ -48,16 +48,18 @@
             {% if r.event_subtitle %}<div class="cell-sub">{{ r.event_subtitle }}</div>{% endif %}
           </td>
           <td>{{ r.event_date or '—' }}</td>
-          <td><span class="badge">{{ r.added_ago }}</span></td>
           <td>{{ r.region }}</td>
           <td>{{ r.product_name }}</td>
+          <td><span class="badge badge-warning">{{ r.opportunity_type }}</span><div class="cell-sub">{{ r.opportunity_reason }}</div></td>
+          <td>{% if r.reference_price is not none %}{{ '%.2f'|format(r.reference_price) }} €{% else %}—{% endif %}</td>
           <td>{{ r.price_text }}</td>
+          <td>{% if r.opportunity_type == 'PRICE_INCREASE' %}<span class="badge badge-danger">+{{ '%.2f'|format(r.increase_amount or 0) }} €</span>{% elif r.opportunity_type == 'PRICE_STEP_UP' %}<span class="badge badge-warning">prochain +{{ '%.2f'|format(r.increase_amount or 0) }} €{% if r.increase_percent is not none %} ({{ '%.1f'|format(r.increase_percent) }} %){% endif %}</span>{% else %}—{% endif %}</td>
           <td>
             {% if r.is_early_free_opportunity %}<span class="badge badge-success">Early free</span>{% endif %}
             {% if r.is_recent %}<span class="badge badge-warning">Recent</span>{% endif %}
             {% if r.is_available in (1, true) %}<span class="badge badge-info">Available</span>{% elif r.is_available in (0, false) %}<span class="badge badge-danger">Unavailable</span>{% else %}<span class="badge">Unknown</span>{% endif %}
           </td>
-          <td><span class="badge badge-info">{{ r.score }}</span></td>
+          <td><span class="badge badge-info">{{ r.opportunity_score }}</span></td>
         </tr>
         {% endfor %}
       </tbody>
