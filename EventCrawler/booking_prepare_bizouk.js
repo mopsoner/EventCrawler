@@ -257,7 +257,23 @@ async function addTicketQuantity(page, match, productName, qty) {
   logLine(`Clicking quantity selector: ${clickedSelector}`);
   for (let i = 0; i < qty; i++) {
     const before = await quantitySnapshot(match.container);
-    await plus.click();
+    try {
+      await plus.scrollIntoViewIfNeeded({ timeout: 5000 });
+      await plus.click({ timeout: 5000 });
+    } catch (clickError) {
+      // Bizouk's horizontally animated ticket list can leave a visible button
+      // outside Playwright's computed viewport even after it has been scrolled.
+      // A DOM click still dispatches the site's normal click handler and is
+      // constrained to the plus control selected inside the matched product.
+      logLine(`Regular quantity click failed (${clickError.message}); retrying with DOM click`);
+      try {
+        await plus.evaluate(element => element.click());
+      } catch (domClickError) {
+        const error = new Error(`Plus button click failed for product: ${productName}: ${domClickError.message}`);
+        error.failureDetails = { tried_selectors: plusSelectors, matched_container_text: match.selected.text, detected_product_candidates: match.candidates };
+        throw error;
+      }
+    }
     await page.waitForTimeout(400);
     const after = await quantitySnapshot(match.container);
     if (!before.length || JSON.stringify(before) === JSON.stringify(after)) logLine('quantity click sent but counter not verified');
