@@ -348,12 +348,13 @@ def patch_scheduler_state(**fields):
         return write_scheduler_state(state)
 
 
-def save_selector_rule(intent, selectors, source="manual", confidence=0.0):
+def save_selector_rule(intent, selectors, source="manual", confidence=0.0, db_connection=None):
     selectors = [str(s).strip() for s in (selectors or []) if str(s).strip()]
     if not intent or not selectors:
         return
     normalized_json = json.dumps(selectors, ensure_ascii=False)
-    c = conn()
+    c = db_connection or conn()
+    owns_connection = db_connection is None
     try:
         existing = c.execute("SELECT id FROM selector_rules WHERE intent=? AND selectors_json=?", (intent, normalized_json)).fetchone()
         if existing:
@@ -366,9 +367,11 @@ def save_selector_rule(intent, selectors, source="manual", confidence=0.0):
                 "INSERT INTO selector_rules(intent, selectors_json, source, confidence, is_enabled, last_validated_at) VALUES (?, ?, ?, ?, ?, ?)",
                 (intent, normalized_json, source, float(confidence or 0), 1, utc_now().isoformat()),
             )
-        c.commit()
+        if owns_connection:
+            c.commit()
     finally:
-        c.close()
+        if owns_connection:
+            c.close()
 
 
 def reanalyze_failure_row(row):
@@ -384,7 +387,13 @@ def reanalyze_failure_row(row):
         intent = suggestion.get("intent")
         selectors = suggestion.get("candidate_selectors") or []
         if intent and selectors:
-            save_selector_rule(intent, selectors, source="ai_reanalyze", confidence=float(suggestion.get("confidence") or 0))
+            save_selector_rule(
+                intent,
+                selectors,
+                source="ai_reanalyze",
+                confidence=float(suggestion.get("confidence") or 0),
+                db_connection=c,
+            )
             c.execute("UPDATE booking_failures SET status=? WHERE id=?", ("validated", row["id"]))
         c.commit()
         return True
