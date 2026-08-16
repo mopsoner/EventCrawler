@@ -5,6 +5,8 @@ Bizouk/Kiwol event monitor for Raspberry.
 EventCrawler crawls event listing pages, stores events/products in SQLite, and records product history so you can spot price, free-ticket, and availability changes over time.
 
 ## Install
+Python 3.10 or newer is supported.
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mopsoner/EventCrawler/main/install.sh -o install.sh && chmod +x install.sh && ./install.sh
 ```
@@ -16,7 +18,8 @@ cd ~/EventCrawler && chmod +x run.sh && ./run.sh
 
 Au premier lancement, un mot de passe administrateur aléatoire est créé dans
 `data/admin_password` (permissions `0600`). Connectez-vous avec l'utilisateur
-`admin` et ce mot de passe. Le serveur écoute uniquement sur `127.0.0.1`; utilisez
+`admin` et ce mot de passe. Par défaut, le serveur écoute uniquement sur
+`127.0.0.1:5080`; utilisez
 un tunnel SSH ou un reverse proxy HTTPS authentifié pour un accès distant.
 
 Les variables `EVENTCRAWLER_ADMIN_USERNAME`, `EVENTCRAWLER_ADMIN_PASSWORD`,
