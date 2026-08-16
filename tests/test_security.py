@@ -139,6 +139,38 @@ class WebSecurityTests(unittest.TestCase):
         self.assertFalse(thread.is_alive(), "database read waited for an uncommitted crawler write")
         self.assertIn("count", reader_result)
 
+    def test_failure_reanalysis_reuses_transaction_connection(self):
+        report = {
+            "failure_key": "selector-repair-1",
+            "booking_started_at": "2026-08-16T12:00:00",
+            "event_url": "https://www.bizouk.com/events/details/repair/1",
+            "intent": "submit_booking",
+            "error_text": "button not found",
+        }
+        suggestion = {
+            "intent": "submit_booking",
+            "candidate_selectors": ["button[type=submit]"],
+            "confidence": 0.9,
+        }
+
+        with patch.object(self.module, "suggest_selector_repair", return_value=suggestion):
+            self.module.upsert_failure_report(report)
+
+        connection = self.module.conn()
+        try:
+            failure = connection.execute(
+                "SELECT status FROM booking_failures WHERE failure_key=?", (report["failure_key"],)
+            ).fetchone()
+            rule = connection.execute(
+                "SELECT source, confidence FROM selector_rules WHERE intent=?",
+                (suggestion["intent"],),
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(failure["status"], "validated")
+        self.assertEqual(rule["source"], "ai_reanalyze")
+        self.assertAlmostEqual(rule["confidence"], 0.9)
+
     def test_log_tail_is_bounded(self):
         path = Path("data/bounded.log")
         path.write_text("\n".join(f"line {number}" for number in range(20)), encoding="utf-8")
