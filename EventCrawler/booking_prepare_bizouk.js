@@ -226,13 +226,25 @@ async function findProductContainer(page, productName) {
 async function quantitySnapshot(container) {
   return container.evaluate(element => {
     const values = [];
-    element.querySelectorAll('input, select, [class*="qty" i], [class*="quantity" i], [class*="counter" i], [aria-live]').forEach(node => {
+    element.querySelectorAll('input[type="number"], input[name*="qty" i], input[name*="quantity" i], select[name*="qty" i], select[name*="quantity" i], [class*="qty" i], [class*="quantity" i], [class*="counter" i], [aria-live]').forEach(node => {
+      if (node.matches('input[type="hidden"], [hidden], [aria-hidden="true"]')) return;
       const value = 'value' in node ? node.value : node.textContent;
       const match = String(value || '').trim().match(/^-?\d+(?:[,.]\d+)?$/);
       if (match) values.push(`${node.tagName}:${match[0]}`);
     });
     return values;
   }).catch(() => []);
+}
+async function currentProductQuantity(container, containerText) {
+  const snapshot = await quantitySnapshot(container);
+  for (const entry of snapshot) {
+    const value = Number(String(entry).split(':').pop());
+    if (Number.isInteger(value) && value >= 0 && value <= 100) return value;
+  }
+  // Bizouk commonly renders the controls as "− 1 +" without a dedicated
+  // quantity input, so retain a text fallback for that layout.
+  const textMatch = String(containerText || '').match(/[−–-]\s*(\d+)\s*\+/);
+  return textMatch ? Number(textMatch[1]) : null;
 }
 async function addTicketQuantity(page, match, productName, qty) {
   const plusSelectors = selectorsFor('quantity_plus', PLUS_SELECTORS);
@@ -264,7 +276,16 @@ async function addTicketQuantity(page, match, productName, qty) {
     throw error;
   }
   logLine(`Clicking quantity selector: ${clickedSelector}`);
-  for (let i = 0; i < qty; i++) {
+  const requestedQuantity = Math.max(0, Number(qty) || 0);
+  const initialQuantity = await currentProductQuantity(match.container, match.selected.text);
+  const clicksNeeded = initialQuantity === null ? requestedQuantity : Math.max(0, requestedQuantity - initialQuantity);
+  if (initialQuantity === null) {
+    logLine(`Current product quantity not measurable; sending ${clicksNeeded} quantity click(s)`);
+  } else {
+    logLine(`Current product quantity=${initialQuantity}; requested=${requestedQuantity}; sending ${clicksNeeded} quantity click(s)`);
+    if (initialQuantity > requestedQuantity) logLine('Current product quantity exceeds requested quantity; no plus click sent');
+  }
+  for (let i = 0; i < clicksNeeded; i++) {
     const before = await quantitySnapshot(match.container);
     try {
       // Bizouk's horizontally animated ticket list can leave a visible button
