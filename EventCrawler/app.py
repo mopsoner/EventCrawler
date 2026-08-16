@@ -7,7 +7,7 @@ import sqlite3
 import subprocess
 import threading
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -48,7 +48,7 @@ BOOKING_APPROVAL_SECONDS = 300
 
 
 def utc_now():
-    return datetime.now(UTC).replace(tzinfo=None)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _load_or_create_secret(path, length=32):
