@@ -332,41 +332,55 @@ async function selectGender(page) {
 }
 async function fillFormByLabels(page, email) {
   let filledInputs = 0;
-  const labels = await page.locator('label[for]').all();
-  for (const label of labels) {
-    const forId = await label.getAttribute('for');
-    if (!forId) continue;
-    const labelText = (await label.textContent() || '').toLowerCase().trim();
-    const input = page.locator(`[name="${forId}"], #${forId}`).first();
-    if (!(await input.count())) continue;
-    const type = (await input.getAttribute('type') || 'text').toLowerCase();
-    if (!['text', 'email', 'tel', 'number'].includes(type)) continue;
-    if (!(await input.isVisible())) continue;
-    let value = null;
-    if ((labelText.includes('first') || labelText.includes('prénom') || labelText.includes('forename') || labelText.includes('given name'))) value = DEFAULT_FIRST_NAME;
-    else if ((labelText.includes('last') || labelText.includes('name') || labelText.includes('nom') || labelText.includes('surname')) && !labelText.includes('first') && !labelText.includes('prénom')) value = DEFAULT_LAST_NAME;
-    else if (labelText.includes('full') && labelText.includes('name')) value = DEFAULT_FULL_NAME;
-    else if (labelText.includes('email') || labelText.includes('e-mail') || labelText.includes('courriel')) value = email;
-    else if (labelText.includes('phone') || labelText.includes('portable') || labelText.includes('mobile') || labelText.includes('tel') || labelText.includes('téléphone')) value = DEFAULT_PHONE;
-    if (value !== null) { try { await input.fill(value); filledInputs++; } catch {} }
-  }
-  const groups = [
-    [DEFAULT_FIRST_NAME, ["input[name*='firstname']","input[name*='first_name']","input[id*='firstname']","input[id*='first_name']"]],
-    [DEFAULT_LAST_NAME, ["input[name*='lastname']","input[name*='last_name']","input[id*='lastname']","input[id*='last_name']"]],
-    [DEFAULT_FULL_NAME, ["input[name*='fullname']","input[name*='full_name']","input[name*='buyer_name']","input[id*='fullname']","input[id*='buyer_name']"]],
-    [email, ["input[type='email']","input[name*='email']","input[id*='email']"]],
-    [DEFAULT_PHONE, ["input[name*='phone']","input[name*='mobile']","input[name*='tel']","input[id*='phone']","input[id*='mobile']"]],
-  ];
-  for (const [val, selectors] of groups) {
-    for (const sel of selectors) {
-      try {
-        const loc = page.locator(sel);
-        for (let index = 0; index < await loc.count(); index++) {
-          const input = loc.nth(index);
-          if (await input.isVisible()) { await input.fill(val); filledInputs++; }
+  const fields = page.locator('input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"]):not([type="file"]), textarea');
+  for (let index = 0; index < await fields.count(); index++) {
+    const input = fields.nth(index);
+    try {
+      if (!(await input.isVisible())) continue;
+      const details = await input.evaluate(element => {
+        const labels = element.labels ? Array.from(element.labels) : [];
+        let label = labels.map(item => item.textContent || '').join(' ').trim();
+        if (!label) {
+          const group = element.closest('.form-group, .form-field, [class*="field" i], [class*="form" i]') || element.parentElement;
+          label = group && group.querySelector('label') ? group.querySelector('label').textContent || '' : '';
         }
-      } catch {}
+        return {
+          label: label.replace(/\s+/g, ' ').replace(/\s*\*\s*$/, '').trim(),
+          name: element.getAttribute('name') || element.id || '',
+          placeholder: element.getAttribute('placeholder') || '',
+          type: (element.getAttribute('type') || element.tagName || 'text').toLowerCase(),
+          required: element.required || element.getAttribute('aria-required') === 'true' || /\*/.test(label),
+          value: element.value || '',
+        };
+      });
+      const hint = normalizeLabel(`${details.label} ${details.name} ${details.placeholder}`);
+      let value = null;
+      if (/\b(first name|firstname|first_name|forename|given name|prenom)\b/.test(hint)) value = DEFAULT_FIRST_NAME;
+      else if (/\b(last name|lastname|last_name|surname|nom de famille)\b/.test(hint)) value = DEFAULT_LAST_NAME;
+      else if (/\b(full name|fullname|full_name|buyer name|buyer_name|name|nom)\b/.test(hint)) value = DEFAULT_FULL_NAME;
+      else if (/\b(email|mail|courriel)\b/.test(hint)) value = email;
+      else if (/\b(phone|portable|mobile|telephone|tel)\b/.test(hint)) value = DEFAULT_PHONE;
+      else if (details.required && !details.value) value = details.label || details.placeholder || details.name || 'Required';
+      if (value !== null) {
+        if (details.type === 'number' && !/^-?\d+(?:[.,]\d+)?$/.test(value)) value = '1';
+        await input.fill(String(value));
+        filledInputs++;
+      }
+    } catch (error) {
+      logLine(`Could not fill attendee field ${index + 1}: ${String(error.message || error).split('\n')[0]}`);
     }
+  }
+  const requiredSelects = page.locator('select[required], select[aria-required="true"]');
+  for (let index = 0; index < await requiredSelects.count(); index++) {
+    const select = requiredSelects.nth(index);
+    try {
+      if (!(await select.isVisible()) || await select.inputValue()) continue;
+      const option = await select.locator('option:not([disabled])').evaluateAll(items => {
+        const match = items.find(item => item.value && item.value.trim());
+        return match ? match.value : null;
+      });
+      if (option) { await select.selectOption(option); filledInputs++; }
+    } catch {}
   }
   await selectGender(page);
   logLine(`Filled attendee form: first_name=${DEFAULT_FIRST_NAME} last_name=${DEFAULT_LAST_NAME} inputs=${filledInputs} URL=${page.url()}`);
