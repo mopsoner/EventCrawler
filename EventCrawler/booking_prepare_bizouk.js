@@ -121,38 +121,128 @@ async function saveFailureReport(page, report) {
       html_excerpt: htmlExcerpt,
       visible_text_excerpt: visibleText,
       tried_selectors: report.tried_selectors || [],
+      detected_product_candidates: report.detected_product_candidates || [],
+      matched_container_text: report.matched_container_text || null,
       created_at: new Date().toISOString(),
     };
     const name = `${Date.now()}-${slugify(report.step_name || report.intent || 'failure')}.json`;
     fs.writeFileSync(path.join(FAILURE_DIR, name), JSON.stringify(payload, null, 2), 'utf8');
   } catch {}
 }
-async function addTicketQuantity(page, productName, qty) {
-  const target = page.getByText(productName, { exact: false }).first();
-  await target.waitFor({ timeout: 15000 });
-  const container = target.locator('xpath=ancestor::div[3]').first();
-  const plusSelectors = selectorsFor('quantity_plus', [
-    '.qty-btn.qty-plus', '.qty-plus', "button:has-text('+')", "a:has-text('+')", "[role='button']:has-text('+')", "button:has-text('Ajouter')", "button:has-text('Add')",
-  ]);
-  let plus = null;
-  for (const sel of plusSelectors) {
+const IGNORED_PRODUCT_WORDS = new Set(['entry', 'ticket', 'billet', 'invitation', 'valid', 'until', 'free', 'gratuit']);
+const PLUS_SELECTORS = [
+  "button:has-text('+')", "a:has-text('+')", "[role='button']:has-text('+')",
+  "button[aria-label*='plus' i]", "button[aria-label*='add' i]", "button[aria-label*='ajouter' i]",
+  '.qty-plus', '.qty-btn.qty-plus', "[class*='plus']", "[class*='increase']",
+];
+function normalizeLabel(text) {
+  return String(text || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function productMatches(candidateText, productName) {
+  const candidate = normalizeLabel(candidateText);
+  const product = normalizeLabel(productName);
+  if (!candidate || !product) return false;
+  if (candidate.includes(product) || product.includes(candidate)) return true;
+  const tokens = value => [...new Set(value.split(' ').filter(token => token.length > 1 && !IGNORED_PRODUCT_WORDS.has(token)))];
+  const wanted = tokens(product);
+  const found = new Set(tokens(candidate));
+  if (!wanted.length) return candidate.split(' ').some(token => product.split(' ').includes(token));
+  return wanted.filter(token => found.has(token)).length >= Math.ceil(wanted.length * 0.6);
+}
+async function hasVisiblePlus(locator) {
+  for (const selector of PLUS_SELECTORS) {
     try {
-      const loc = container.locator(sel);
-      if (await loc.count() > 0) { plus = loc.first(); break; }
+      const matches = locator.locator(selector);
+      for (let i = 0; i < Math.min(await matches.count(), 4); i++) if (await matches.nth(i).isVisible()) return true;
     } catch {}
   }
-  if (!plus) {
-    for (const sel of plusSelectors) {
+  return false;
+}
+async function findProductContainer(page, productName) {
+  const locator = page.locator("div, article, section, li, [class*='ticket' i], [class*='product' i], [class*='tarif' i], [class*='price' i]");
+  const candidates = [];
+  const detectedCandidates = [];
+  const count = await locator.count();
+  for (let index = 0; index < Math.min(count, 1000); index++) {
+    const item = locator.nth(index);
+    try {
+      if (!(await item.isVisible())) continue;
+      const text = (await item.innerText()).replace(/\s+/g, ' ').trim();
+      if (!text) continue;
+      const normalized = normalizeLabel(text);
+      const exactContains = normalized.includes(normalizeLabel(productName));
+      const hasPlusButton = await hasVisiblePlus(item);
+      const hasPriceSignal = /€|\bfree\b|\bgratuit(?:e)?\b|\binvitation\b|\bentry\b|\bticket\b|\bbillet\b/i.test(text);
+      if (!hasPriceSignal && !hasPlusButton) continue;
+      const prices = text.match(/(?:\d+[,.]?\d*\s*€|€\s*\d+[,.]?\d*|\bfree\b|\bgratuit(?:e)?\b)/gi) || [];
+      let score = (exactContains ? 5 : 0) + (hasPlusButton ? 3 : 0) + (hasPriceSignal ? 2 : 0);
+      if (text.length > 900) score -= 5;
+      if (prices.length > 1) score -= 3;
+      const candidate = { index, text: text.slice(0, 900), score, hasPlusButton, hasPriceSignal, textLength: text.length };
+      detectedCandidates.push(candidate);
+      if (productMatches(text, productName)) candidates.push(candidate);
+    } catch {}
+  }
+  candidates.sort((a, b) => b.score - a.score || a.textLength - b.textLength);
+  detectedCandidates.sort((a, b) => b.score - a.score || a.textLength - b.textLength);
+  logLine(`Found ${detectedCandidates.length} candidate product containers; ${candidates.length} matched (scanned ${count})`);
+  if (!candidates.length) {
+    const error = new Error(`Product not found: ${productName}`);
+    error.failureDetails = { detected_product_candidates: detectedCandidates.slice(0, 20) };
+    throw error;
+  }
+  const selected = candidates[0];
+  logLine(`Selected product candidate score=${selected.score}: ${selected.text.slice(0, 300)}`);
+  return { container: locator.nth(selected.index), selected, candidates: candidates.slice(0, 20) };
+}
+async function quantitySnapshot(container) {
+  return container.evaluate(element => {
+    const values = [];
+    element.querySelectorAll('input, select, [class*="qty" i], [class*="quantity" i], [class*="counter" i], [aria-live]').forEach(node => {
+      const value = 'value' in node ? node.value : node.textContent;
+      const match = String(value || '').trim().match(/^-?\d+(?:[,.]\d+)?$/);
+      if (match) values.push(`${node.tagName}:${match[0]}`);
+    });
+    return values;
+  }).catch(() => []);
+}
+async function addTicketQuantity(page, match, productName, qty) {
+  const plusSelectors = selectorsFor('quantity_plus', PLUS_SELECTORS);
+  let searchRoot = match.container;
+  let plus = null;
+  let clickedSelector = null;
+  for (let ancestor = 0; ancestor < 5 && !plus; ancestor++) {
+    for (const selector of plusSelectors) {
       try {
-        const loc = page.locator(sel);
-        if (await loc.count() > 0) { plus = loc.first(); break; }
+        const options = searchRoot.locator(selector);
+        for (let i = 0; i < Math.min(await options.count(), 5); i++) {
+          if (await options.nth(i).isVisible()) { plus = options.nth(i); clickedSelector = selector; break; }
+        }
       } catch {}
+      if (plus) break;
+    }
+    if (!plus) searchRoot = searchRoot.locator('xpath=..');
+  }
+  // A page-wide fallback is safe only when the product itself was an exact, high-confidence match.
+  if (!plus && match.selected.score >= 7 && normalizeLabel(match.selected.text).includes(normalizeLabel(productName))) {
+    for (const selector of plusSelectors) {
+      const options = page.locator(selector);
+      if (await options.count() === 1 && await options.first().isVisible()) { plus = options.first(); clickedSelector = selector; break; }
     }
   }
-  if (!plus) throw new Error(`Could not find + button for '${productName}'`);
+  if (!plus) {
+    const error = new Error(`Plus button not found for product: ${productName}`);
+    error.failureDetails = { tried_selectors: plusSelectors, matched_container_text: match.selected.text, detected_product_candidates: match.candidates };
+    throw error;
+  }
+  logLine(`Clicking quantity selector: ${clickedSelector}`);
   for (let i = 0; i < qty; i++) {
+    const before = await quantitySnapshot(match.container);
     await plus.click();
     await page.waitForTimeout(400);
+    const after = await quantitySnapshot(match.container);
+    if (!before.length || JSON.stringify(before) === JSON.stringify(after)) logLine('quantity click sent but counter not verified');
   }
   return plusSelectors;
 }
@@ -283,15 +373,19 @@ async function runPrepare(eventUrl, ticketCount, email, productName) {
     await page.goto(eventUrl, { timeout: 60000 });
     await page.waitForLoadState('networkidle');
     await acceptCookies(page);
-    const plusSelectors = await addTicketQuantity(page, productName, ticketCount);
-    lastStepName = 'add_ticket_quantity'; lastIntent = 'quantity_plus'; lastSelectors = plusSelectors;
+    logLine(`Loaded URL=${page.url()} | Title=${await page.title().catch(() => '')} | Requested product=${productName}`);
+    lastStepName = 'find_product'; lastIntent = 'product_match'; lastSelectors = [];
+    const productMatch = await findProductContainer(page, productName);
+    lastStepName = 'add_ticket_quantity'; lastIntent = 'quantity_plus'; lastSelectors = selectorsFor('quantity_plus', PLUS_SELECTORS);
+    const plusSelectors = await addTicketQuantity(page, productMatch, productName, ticketCount);
     await screenshot(page, `${prefix}-02-qty`);
-    const checkoutSelectors = selectorsFor('checkout', ["button:has-text('Continue booking')", "button:has-text('Continuer la réservation')", "button:has-text('Book now')", "button:has-text('Proceed to checkout')", "button:has-text('Commander')"]);
+    const checkoutSelectors = selectorsFor('checkout', ["button:has-text('Continue booking')", "button:has-text('Continuer la réservation')", "button:has-text('Book now')", "button:has-text('Proceed to checkout')", "button:has-text('Commander')", "button:has-text('Continuer')", "button:has-text('Continuer ma commande')", "button:has-text('Réserver')", "button:has-text('Je réserve')", "button:has-text('Commander gratuitement')", "button:has-text('Valider')", "a:has-text('Continuer')", "a[href*='checkout']", "a[href*='cart']", "a[href*='commande']"]);
     lastStepName = 'proceed_checkout'; lastIntent = 'checkout'; lastSelectors = checkoutSelectors;
     const proceeded = await clickFirstVisible(page, checkoutSelectors, 10000);
     if (!proceeded) throw new Error('Could not find checkout button');
     await page.waitForTimeout(2000);
     try { await page.waitForLoadState('networkidle', { timeout: 15000 }); } catch {}
+    logLine(`URL after checkout click: ${page.url()}`);
     for (let step = 1; step <= 8; step++) {
       await fillFormByLabels(page, email);
       await selectRadioDefaults(page);
@@ -325,7 +419,8 @@ async function runPrepare(eventUrl, ticketCount, email, productName) {
     await saveFailureReport(page, { booking_started_at: startedAt, event_url: eventUrl, product_name: productName, step_name: lastStepName, intent: lastIntent, error_text: msg, tried_selectors: lastSelectors });
     writeState({ running: false, status: 'submitted_unconfirmed', finished_at: new Date().toISOString(), last_error: msg, confirmation_text: null });
   } catch (err) {
-    await saveFailureReport(page, { booking_started_at: startedAt, event_url: eventUrl, product_name: productName, step_name: lastStepName, intent: lastIntent, error_text: String(err), tried_selectors: lastSelectors });
+    const details = err.failureDetails || {};
+    await saveFailureReport(page, { booking_started_at: startedAt, event_url: eventUrl, product_name: productName, step_name: lastStepName, intent: lastIntent, error_text: err.message || String(err), tried_selectors: lastSelectors, ...details });
     writeState({ running: false, status: 'failed', finished_at: new Date().toISOString(), last_error: String(err), confirmation_text: null });
     logLine(`Flow failed: ${err}`);
     throw err;
