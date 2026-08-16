@@ -1,18 +1,22 @@
 import json
+import logging
 import os
 import re
+import secrets
 import sqlite3
 import subprocess
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask import Flask, abort, jsonify, redirect, render_template, request, session, url_for
 
 from ai_automation import enrich_event_labels, suggest_selector_repair
 from config_store import load_config, save_config, slugify_region_name
+from security import UnsafeURL, credentials_match, validate_external_url
+from storage import atomic_write_json, atomic_write_text, interprocess_lock
 
 DB_PATH = "data/eventcrawler.sqlite"
 STATUS_PATH = Path("data/crawl_status.json")
@@ -30,7 +34,7 @@ NOISE_ORGANIZER_HOSTS = {
     "www.gov.uk",
 }
 app = Flask(__name__)
-app.secret_key = "eventcrawler-local"
+LOGGER = logging.getLogger("eventcrawler")
 CRAWL_PROCESS = None
 CRAWL_LOCK = threading.Lock()
 SCHEDULER_THREAD = None
@@ -38,12 +42,92 @@ SCHEDULER_THREAD_LOCK = threading.Lock()
 SCHEDULER_LOOP_SECONDS = 30
 BOOKING_PROCESS = None
 BOOKING_LOCK = threading.Lock()
+PENDING_BOOKINGS = {}
+PENDING_BOOKINGS_LOCK = threading.Lock()
+BOOKING_APPROVAL_SECONDS = 300
+
+
+def utc_now():
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _load_or_create_secret(path, length=32):
+    path = Path(path)
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    value = secrets.token_urlsafe(length)
+    atomic_write_text(path, value + "\n")
+    return value
+
+
+def configure_app(test_config=None):
+    app.config.update(
+        SECRET_KEY=os.getenv("EVENTCRAWLER_SECRET_KEY") or _load_or_create_secret("data/secret_key"),
+        ADMIN_USERNAME=os.getenv("EVENTCRAWLER_ADMIN_USERNAME", "admin"),
+        ADMIN_PASSWORD=os.getenv("EVENTCRAWLER_ADMIN_PASSWORD") or _load_or_create_secret("data/admin_password", 18),
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Strict",
+        SESSION_COOKIE_SECURE=os.getenv("EVENTCRAWLER_HTTPS", "0") == "1",
+        MAX_CONTENT_LENGTH=64 * 1024,
+    )
+    if test_config:
+        app.config.update(test_config)
+    return app
+
+
+def create_app(test_config=None, start_scheduler=False):
+    configure_app(test_config)
+    init_db()
+    if start_scheduler:
+        ensure_scheduler_thread()
+    return app
+
+
+def csrf_token():
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+app.jinja_env.globals["csrf_token"] = csrf_token
+
+
+@app.before_request
+def enforce_security():
+    auth = request.authorization
+    if not auth or not credentials_match(
+        auth.username, auth.password, app.config.get("ADMIN_USERNAME"), app.config.get("ADMIN_PASSWORD")
+    ):
+        return ("Authentification requise", 401, {"WWW-Authenticate": 'Basic realm="EventCrawler"'})
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        supplied = request.headers.get("X-CSRF-Token") or request.form.get("csrf_token")
+        expected = session.get("csrf_token")
+        if not expected or not supplied or not secrets.compare_digest(supplied, expected):
+            abort(403, description="Jeton CSRF absent ou invalide")
+
+
+@app.after_request
+def secure_response(response):
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Content-Security-Policy", "default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'")
+    if request.path.startswith("/api/") or request.path in {"/config", "/tickets", "/failures"}:
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def internal_redirect(endpoint, **values):
+    return redirect(url_for(endpoint, **values))
 
 
 def conn():
     Path("data").mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(DB_PATH)
     c.row_factory = sqlite3.Row
+    c.execute("PRAGMA foreign_keys=ON")
     return c
 
 
@@ -198,7 +282,7 @@ def default_scheduler_state():
 
 
 def default_booking_state():
-    return {"running": False, "status": "idle", "mode": "auto_confirm", "event_url": None, "product_name": None, "ticket_count": 0, "email": None, "started_at": None, "finished_at": None, "last_error": None, "log_path": "data/booking.log", "confirmation_text": None}
+    return {"running": False, "status": "idle", "mode": "human_approved", "event_url": None, "product_name": None, "ticket_count": 0, "email": None, "started_at": None, "finished_at": None, "last_error": None, "log_path": "data/booking.log", "confirmation_text": None}
 
 
 def read_scheduler_state():
@@ -208,7 +292,8 @@ def read_scheduler_state():
         return state
     try:
         data = json.loads(SCHEDULER_STATE_PATH.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, json.JSONDecodeError) as exc:
+        LOGGER.exception("Impossible de lire l'état du planificateur: %s", exc)
         data = default_scheduler_state()
     state = default_scheduler_state()
     state.update(data if isinstance(data, dict) else {})
@@ -217,16 +302,16 @@ def read_scheduler_state():
 
 def write_scheduler_state(state):
     state = dict(default_scheduler_state(), **(state or {}))
-    state["updated_at"] = datetime.utcnow().isoformat()
-    SCHEDULER_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SCHEDULER_STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    state["updated_at"] = utc_now().isoformat()
+    atomic_write_json(SCHEDULER_STATE_PATH, state)
     return state
 
 
 def patch_scheduler_state(**fields):
-    state = read_scheduler_state()
-    state.update(fields)
-    return write_scheduler_state(state)
+    with interprocess_lock(SCHEDULER_STATE_PATH):
+        state = read_scheduler_state()
+        state.update(fields)
+        return write_scheduler_state(state)
 
 
 def save_selector_rule(intent, selectors, source="manual", confidence=0.0):
@@ -240,12 +325,12 @@ def save_selector_rule(intent, selectors, source="manual", confidence=0.0):
         if existing:
             c.execute(
                 "UPDATE selector_rules SET source=?, confidence=?, last_validated_at=?, is_enabled=1 WHERE id=?",
-                (source, float(confidence or 0), datetime.utcnow().isoformat(), existing["id"]),
+                (source, float(confidence or 0), utc_now().isoformat(), existing["id"]),
             )
         else:
             c.execute(
                 "INSERT INTO selector_rules(intent, selectors_json, source, confidence, is_enabled, last_validated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (intent, normalized_json, source, float(confidence or 0), 1, datetime.utcnow().isoformat()),
+                (intent, normalized_json, source, float(confidence or 0), 1, utc_now().isoformat()),
             )
         c.commit()
     finally:
@@ -280,8 +365,9 @@ def upsert_failure_report(report: dict):
     try:
         c.execute(
             "INSERT OR IGNORE INTO booking_failures(failure_key, booking_started_at, event_url, product_name, step_name, intent, error_text, page_url, page_title, html_excerpt, visible_text_excerpt, tried_selectors_json, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (failure_key, report.get("booking_started_at"), report.get("event_url"), report.get("product_name"), report.get("step_name"), report.get("intent"), report.get("error_text"), report.get("page_url"), report.get("page_title"), report.get("html_excerpt"), report.get("visible_text_excerpt"), tried_json, "new"),
+            (failure_key, report.get("booking_started_at"), report.get("event_url"), report.get("product_name"), report.get("step_name"), report.get("intent"), str(report.get("error_text") or "")[:2000], report.get("page_url"), report.get("page_title"), str(report.get("html_excerpt") or "")[:4000], str(report.get("visible_text_excerpt") or "")[:4000], tried_json, "new"),
         )
+        c.execute("DELETE FROM booking_failures WHERE created_at < datetime('now', '-30 days')")
         row = c.execute("SELECT * FROM booking_failures WHERE failure_key=?", (failure_key,)).fetchone()
     finally:
         c.commit()
@@ -297,7 +383,8 @@ def sync_booking_failures_from_disk():
             report = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(report, dict):
                 upsert_failure_report(report)
-        except Exception:
+        except (OSError, json.JSONDecodeError) as exc:
+            LOGGER.warning("Rapport de réservation illisible %s: %s", path, exc)
             continue
 
 
@@ -308,7 +395,7 @@ def sync_ticket_from_booking_state(state=None):
     event_url = (state.get("event_url") or "").strip()
     product_name = (state.get("product_name") or "").strip()
     email = (state.get("email") or "").strip().lower()
-    booking_started_at = state.get("started_at") or state.get("finished_at") or datetime.utcnow().isoformat()
+    booking_started_at = state.get("started_at") or state.get("finished_at") or utc_now().isoformat()
     if not event_url or not product_name or not email:
         return
     c = conn()
@@ -316,7 +403,7 @@ def sync_ticket_from_booking_state(state=None):
     try:
         c.execute(
             "INSERT OR IGNORE INTO tickets(booking_started_at, booked_at, event_id, event_url, event_name, event_date, region, product_name, ticket_count, email, status, confirmation_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (booking_started_at, state.get("finished_at") or datetime.utcnow().isoformat(), event["id"] if event else None, event_url, event["name"] if event else event_url, event["event_date"] if event else None, event["region"] if event else None, product_name, int(state.get("ticket_count") or 1), email, state.get("status"), state.get("confirmation_text")),
+            (booking_started_at, state.get("finished_at") or utc_now().isoformat(), event["id"] if event else None, event_url, event["name"] if event else event_url, event["event_date"] if event else None, event["region"] if event else None, product_name, int(state.get("ticket_count") or 1), email, state.get("status"), state.get("confirmation_text")),
         )
         c.commit()
     finally:
@@ -328,7 +415,8 @@ def read_booking_state(raw=False):
         return default_booking_state()
     try:
         data = json.loads(BOOKING_STATE_PATH.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, json.JSONDecodeError) as exc:
+        LOGGER.exception("Impossible de lire l'état de réservation: %s", exc)
         data = default_booking_state()
     state = default_booking_state()
     state.update(data if isinstance(data, dict) else {})
@@ -376,10 +464,10 @@ def launch_booking_prepare(event_url: str, ticket_count: int, email: str, produc
         log_file = open(log_path, "a", encoding="utf-8")
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
-        env["BOOKING_FIRST_NAME"] = str(profile.get("first_name") or "Olivier")
-        env["BOOKING_LAST_NAME"] = str(profile.get("last_name") or "Mops")
-        env["BOOKING_FULL_NAME"] = str(profile.get("full_name") or f"{profile.get('first_name', 'Olivier')} {profile.get('last_name', 'Mops')}")
-        env["BOOKING_PHONE"] = str(profile.get("phone") or "0691243236")
+        env["BOOKING_FIRST_NAME"] = str(profile.get("first_name") or "Prénom")
+        env["BOOKING_LAST_NAME"] = str(profile.get("last_name") or "Nom")
+        env["BOOKING_FULL_NAME"] = str(profile.get("full_name") or f"{profile.get('first_name', 'Prénom')} {profile.get('last_name', 'Nom')}")
+        env["BOOKING_PHONE"] = str(profile.get("phone") or "0600000000")
         env["BOOKING_GENDER"] = str(profile.get("gender") or "Homme")
         env["BOOKING_SELECTOR_RULES_JSON"] = json.dumps(selector_rules_env(), ensure_ascii=False)
         BOOKING_PROCESS = subprocess.Popen([
@@ -415,7 +503,8 @@ def read_crawl_status():
         return {"running": False, "regions": [], "last_error": None, "started_at": None, "finished_at": None}
     try:
         return json.loads(STATUS_PATH.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, json.JSONDecodeError) as exc:
+        LOGGER.exception("Impossible de lire l'état du crawl: %s", exc)
         return {"running": False, "regions": [], "last_error": "status_read_error", "started_at": None, "finished_at": None}
 
 
@@ -448,14 +537,14 @@ def is_recent(value, hours=24):
     dt = parse_dt(value)
     if not dt:
         return False
-    return datetime.utcnow() - dt.replace(tzinfo=None) <= timedelta(hours=hours)
+    return utc_now() - dt.replace(tzinfo=None) <= timedelta(hours=hours)
 
 
 def is_due(last_run_at, minutes=0, hours=0):
     dt = parse_dt(last_run_at)
     if not dt:
         return True
-    delta = datetime.utcnow() - dt.replace(tzinfo=None)
+    delta = utc_now() - dt.replace(tzinfo=None)
     return delta >= timedelta(minutes=minutes, hours=hours)
 
 
@@ -463,7 +552,7 @@ def time_ago(value):
     dt = parse_dt(value)
     if not dt:
         return "—"
-    delta = datetime.utcnow() - dt.replace(tzinfo=None)
+    delta = utc_now() - dt.replace(tzinfo=None)
     seconds = int(max(delta.total_seconds(), 0))
     if seconds < 60:
         return "à l’instant"
@@ -749,10 +838,10 @@ def scheduler_tick():
     region_due = is_due(state.get("last_region_scan_at"), minutes=int(cfg.get("region_scan_frequency_minutes", 60)))
     free_due = is_due(state.get("last_free_refresh_at"), hours=int(cfg.get("free_product_refresh_frequency_hours", 24)))
     if region_due and launch_crawl(enabled_regions, trigger="scheduler_region_scan"):
-        patch_scheduler_state(last_region_scan_at=datetime.utcnow().isoformat(), current_job="region_scan")
+        patch_scheduler_state(last_region_scan_at=utc_now().isoformat(), current_job="region_scan")
         return
     if free_due and launch_crawl(enabled_regions, trigger="scheduler_free_refresh"):
-        patch_scheduler_state(last_free_refresh_at=datetime.utcnow().isoformat(), current_job="free_refresh")
+        patch_scheduler_state(last_free_refresh_at=utc_now().isoformat(), current_job="free_refresh")
         return
     if not crawl_is_running() and state.get("current_job"):
         patch_scheduler_state(current_job=None)
@@ -763,7 +852,7 @@ def scheduler_loop():
         try:
             scheduler_tick()
         except Exception:
-            pass
+            LOGGER.exception("Échec du tick du planificateur")
         time.sleep(SCHEDULER_LOOP_SECONDS)
 
 
@@ -797,7 +886,7 @@ def run_crawl_now():
 @app.route("/crawl/stop", methods=["POST"])
 def stop_crawl_now():
     stop_crawl_process()
-    return redirect(request.referrer or url_for("dashboard"))
+    return internal_redirect("dashboard")
 
 
 @app.route("/booking/prepare", methods=["POST"])
@@ -805,30 +894,56 @@ def booking_prepare():
     data = request.get_json(silent=True) or request.form
     cfg = load_config()
     profile = cfg.get("booking_profile", {})
-    event_url = (data.get("event_url") or "").strip()
-    product_name = (data.get("product_name") or "").strip()
-    email = (data.get("email") or profile.get("email") or "contact@sejourcarnaval.com").strip()
     try:
-        ticket_count = max(1, int(data.get("ticket_count", profile.get("default_ticket_count", 2))))
-    except Exception:
-        ticket_count = int(profile.get("default_ticket_count", 2) or 2)
+        event_url = validate_external_url(data.get("event_url"))
+    except UnsafeURL as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
+    product_name = (data.get("product_name") or "").strip()
+    email = (data.get("email") or profile.get("email") or "utilisateur@example.com").strip()
+    try:
+        ticket_count = max(1, min(10, int(data.get("ticket_count", profile.get("default_ticket_count", 1)))))
+    except (TypeError, ValueError):
+        ticket_count = 1
     if not event_url or not product_name:
         return jsonify({"status": "error", "message": "missing event_url or product_name"}), 400
-    started = launch_booking_prepare(event_url, ticket_count, email, product_name)
-    return jsonify({"status": "started" if started else "busy", "state": read_booking_state()})
+    c = conn()
+    product = c.execute(
+        "SELECT p.product_name, p.numeric_price, p.is_free, p.is_available FROM products p JOIN events e ON e.id=p.event_id WHERE e.event_url=? AND p.product_name=? ORDER BY p.last_seen_at DESC LIMIT 1",
+        (event_url, product_name),
+    ).fetchone()
+    c.close()
+    if not product or not product["is_free"] or product["numeric_price"] not in (0, 0.0) or product["is_available"] not in (1, None):
+        return jsonify({"status": "error", "message": "le produit gratuit n'est pas disponible dans la base locale"}), 400
+    approval_token = secrets.token_urlsafe(32)
+    pending = {"event_url": event_url, "ticket_count": ticket_count, "email": email, "product_name": product["product_name"], "maximum_price": 0, "expires_at": time.time() + BOOKING_APPROVAL_SECONDS}
+    with PENDING_BOOKINGS_LOCK:
+        PENDING_BOOKINGS.clear()
+        PENDING_BOOKINGS[approval_token] = pending
+    return jsonify({"status": "approval_required", "approval_token": approval_token, "expires_in": BOOKING_APPROVAL_SECONDS, "summary": pending})
+
+
+@app.route("/booking/confirm", methods=["POST"])
+def booking_confirm():
+    data = request.get_json(silent=True) or request.form
+    token = str(data.get("approval_token") or "")
+    with PENDING_BOOKINGS_LOCK:
+        pending = PENDING_BOOKINGS.pop(token, None)
+    if not pending or pending["expires_at"] < time.time():
+        return jsonify({"status": "error", "message": "approbation absente ou expirée"}), 400
+    started = launch_booking_prepare(pending["event_url"], pending["ticket_count"], pending["email"], pending["product_name"])
+    return jsonify({"status": "started" if started else "busy"})
 
 
 @app.route("/scheduler/start", methods=["POST"])
 def scheduler_start():
-    ensure_scheduler_thread()
     patch_scheduler_state(enabled=True)
-    return redirect(request.referrer or url_for("config_page", scheduler_saved=1))
+    return internal_redirect("config_page", scheduler_saved=1)
 
 
 @app.route("/scheduler/stop", methods=["POST"])
 def scheduler_stop():
     patch_scheduler_state(enabled=False, current_job=None)
-    return redirect(request.referrer or url_for("config_page", scheduler_saved=1))
+    return internal_redirect("config_page", scheduler_saved=1)
 
 
 @app.route("/scheduler/run-region-scan", methods=["POST"])
@@ -836,8 +951,8 @@ def scheduler_run_region_scan():
     cfg = load_config()
     enabled_regions = [name for name, region in cfg["regions"].items() if region.get("enabled")]
     if enabled_regions and launch_crawl(enabled_regions, trigger="manual_region_scan"):
-        patch_scheduler_state(last_region_scan_at=datetime.utcnow().isoformat(), current_job="region_scan")
-    return redirect(request.referrer or url_for("config_page"))
+        patch_scheduler_state(last_region_scan_at=utc_now().isoformat(), current_job="region_scan")
+    return internal_redirect("config_page")
 
 
 @app.route("/scheduler/run-free-refresh", methods=["POST"])
@@ -845,8 +960,8 @@ def scheduler_run_free_refresh():
     cfg = load_config()
     enabled_regions = [name for name, region in cfg["regions"].items() if region.get("enabled")]
     if enabled_regions and launch_crawl(enabled_regions, trigger="manual_free_refresh"):
-        patch_scheduler_state(last_free_refresh_at=datetime.utcnow().isoformat(), current_job="free_refresh")
-    return redirect(request.referrer or url_for("config_page"))
+        patch_scheduler_state(last_free_refresh_at=utc_now().isoformat(), current_job="free_refresh")
+    return internal_redirect("config_page")
 
 
 @app.route("/events")
@@ -883,7 +998,7 @@ def reanalyze_failure(failure_id):
         c.close()
     if row:
         reanalyze_failure_row(row)
-    return redirect(request.referrer or url_for("failures"))
+    return internal_redirect("failures")
 
 
 @app.route("/opportunities")
@@ -938,7 +1053,7 @@ def toggle_selector_rule(rule_id):
     c.execute("UPDATE selector_rules SET is_enabled = CASE WHEN COALESCE(is_enabled,1)=1 THEN 0 ELSE 1 END WHERE id=?", (rule_id,))
     c.commit()
     c.close()
-    return redirect(request.referrer or url_for("failures"))
+    return internal_redirect("failures")
 
 
 @app.route("/config", methods=["GET", "POST"])
@@ -957,10 +1072,18 @@ def config_page():
             url_value = (request.form.get(f"region_url_{name}", previous.get("url", "")) or "").strip()
             if not url_value:
                 continue
+            try:
+                url_value = validate_external_url(url_value)
+            except UnsafeURL:
+                return internal_redirect("config_page", error="unsafe_url")
             regions[name] = {"enabled": request.form.get(f"region_enabled_{name}") == "on", "url": url_value}
         new_region_name = slugify_region_name(request.form.get("new_region_name", ""))
         new_region_url = (request.form.get("new_region_url") or "").strip()
         if new_region_name and new_region_url:
+            try:
+                new_region_url = validate_external_url(new_region_url)
+            except UnsafeURL:
+                return internal_redirect("config_page", error="unsafe_url")
             regions[new_region_name] = {"enabled": request.form.get("new_region_enabled") == "on", "url": new_region_url}
         new_config = {
             "max_workers": request.form.get("max_workers", current["max_workers"]),
@@ -969,12 +1092,12 @@ def config_page():
             "free_product_refresh_frequency_hours": request.form.get("free_product_refresh_frequency_hours", current.get("free_product_refresh_frequency_hours", 24)),
             "user_agent": request.form.get("user_agent", current["user_agent"]),
             "booking_profile": {
-                "first_name": request.form.get("booking_first_name", current.get("booking_profile", {}).get("first_name", "Olivier")),
-                "last_name": request.form.get("booking_last_name", current.get("booking_profile", {}).get("last_name", "Mops")),
-                "full_name": request.form.get("booking_full_name", current.get("booking_profile", {}).get("full_name", "Olivier Mops")),
-                "phone": request.form.get("booking_phone", current.get("booking_profile", {}).get("phone", "0691243236")),
+                "first_name": request.form.get("booking_first_name", current.get("booking_profile", {}).get("first_name", "Prénom")),
+                "last_name": request.form.get("booking_last_name", current.get("booking_profile", {}).get("last_name", "Nom")),
+                "full_name": request.form.get("booking_full_name", current.get("booking_profile", {}).get("full_name", "Prénom Nom")),
+                "phone": request.form.get("booking_phone", current.get("booking_profile", {}).get("phone", "0600000000")),
                 "gender": request.form.get("booking_gender", current.get("booking_profile", {}).get("gender", "Homme")),
-                "email": request.form.get("booking_email", current.get("booking_profile", {}).get("email", "contact@sejourcarnaval.com")),
+                "email": request.form.get("booking_email", current.get("booking_profile", {}).get("email", "utilisateur@example.com")),
                 "default_ticket_count": request.form.get("booking_default_ticket_count", current.get("booking_profile", {}).get("default_ticket_count", 2)),
             },
             "regions": regions,
@@ -998,12 +1121,20 @@ def api_free():
 
 @app.route("/api/tickets")
 def api_tickets():
-    return jsonify(list_tickets())
+    rows = list_tickets()
+    for row in rows:
+        row.pop("email", None)
+        row.pop("confirmation_text", None)
+    return jsonify(rows)
 
 
 @app.route("/api/failures")
 def api_failures():
-    return jsonify(list_failures())
+    rows = list_failures()
+    for row in rows:
+        for field in ("html_excerpt", "visible_text_excerpt", "error_text"):
+            row.pop(field, None)
+    return jsonify(rows)
 
 
 @app.route("/api/opportunities")
@@ -1018,7 +1149,9 @@ def api_activity():
 
 @app.route("/api/config")
 def api_config():
-    return jsonify(load_config())
+    config = load_config()
+    config["booking_profile"] = {"configured": bool(config.get("booking_profile"))}
+    return jsonify(config)
 
 
 @app.route("/api/crawl_status")
@@ -1036,8 +1169,22 @@ def api_booking_status():
     return jsonify(read_booking_state())
 
 
-init_db()
-ensure_scheduler_thread()
+@app.route("/api/health")
+def api_health():
+    try:
+        c = conn()
+        c.execute("SELECT 1").fetchone()
+        c.close()
+        database = "ok"
+    except sqlite3.Error:
+        LOGGER.exception("Échec du contrôle de santé SQLite")
+        database = "error"
+    payload = {"status": "ok" if database == "ok" else "degraded", "database": database, "scheduler": read_scheduler_state()}
+    return jsonify(payload), 200 if database == "ok" else 503
+
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+    create_app(start_scheduler=os.getenv("EVENTCRAWLER_EMBEDDED_SCHEDULER", "0") == "1")
+    LOGGER.warning("Identifiant administrateur: %s; mot de passe dans data/admin_password", app.config["ADMIN_USERNAME"])
+    app.run(host=os.getenv("EVENTCRAWLER_HOST", "127.0.0.1"), port=int(os.getenv("PORT", "5000")), debug=False)

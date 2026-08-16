@@ -144,7 +144,7 @@ async function prepareBooking(button, eventUrl, productName, ticketCount, email)
   try {
     const res = await fetch('/booking/prepare', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content },
       body: JSON.stringify({
         event_url: eventUrl,
         product_name: productName,
@@ -157,11 +157,22 @@ async function prepareBooking(button, eventUrl, productName, ticketCount, email)
       button.textContent = 'Erreur';
       return;
     }
-    if (data.status === 'busy') {
-      button.textContent = 'Déjà en cours';
+    if (data.status !== 'approval_required') {
+      button.textContent = 'Réponse inattendue';
       return;
     }
-    button.textContent = 'Lancé';
+    const summary = data.summary;
+    if (!window.confirm(`Confirmer la réservation ?\n\nÉvénement : ${summary.event_url}\nProduit : ${summary.product_name}\nQuantité : ${summary.ticket_count}\nE-mail : ${summary.email}`)) {
+      button.textContent = 'Annulé';
+      return;
+    }
+    const confirmRes = await fetch('/booking/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content },
+      body: JSON.stringify({ approval_token: data.approval_token })
+    });
+    const confirmed = await confirmRes.json();
+    button.textContent = confirmed.status === 'started' ? 'Lancé' : (confirmed.status === 'busy' ? 'Déjà en cours' : 'Erreur');
   } catch (err) {
     button.textContent = 'Erreur réseau';
   } finally {

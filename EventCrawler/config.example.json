@@ -5,13 +5,13 @@
   "free_product_refresh_frequency_hours": 24,
   "user_agent": "Mozilla/5.0",
   "booking_profile": {
-    "first_name": "Olivier",
-    "last_name": "Mops",
-    "full_name": "Olivier Mops",
-    "phone": "0691243236",
-    "gender": "Homme",
-    "email": "contact@sejourcarnaval.com",
-    "default_ticket_count": 2
+    "first_name": "Prénom",
+    "last_name": "Nom",
+    "full_name": "Prénom Nom",
+    "phone": "0600000000",
+    "gender": "Non précisé",
+    "email": "utilisateur@example.com",
+    "default_ticket_count": 1
   },
   "regions": {
     "london": {

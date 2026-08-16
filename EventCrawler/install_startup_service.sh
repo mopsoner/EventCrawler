@@ -12,6 +12,7 @@ PIP_BIN="$VENV_DIR/bin/pip"
 NODE_BIN="$(command -v node || true)"
 NPM_BIN="$(command -v npm || true)"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
+SCHEDULER_SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}-scheduler.service"
 PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/.cache/ms-playwright"
 
 if [[ ! -d "$APP_DIR" ]]; then
@@ -68,9 +69,31 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
+sudo tee "$SCHEDULER_SERVICE_PATH" >/dev/null <<EOF
+[Unit]
+Description=EventCrawler scheduler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$RUN_USER
+Group=$RUN_GROUP
+WorkingDirectory=$WORKING_DIR
+Environment=PYTHONUNBUFFERED=1
+ExecStart=$PYTHON_BIN scheduler.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE_NAME"
+sudo systemctl enable "${SERVICE_NAME}-scheduler"
 sudo systemctl restart "$SERVICE_NAME"
+sudo systemctl restart "${SERVICE_NAME}-scheduler"
 
 echo
 echo "Installed and started: $SERVICE_NAME"

@@ -11,10 +11,10 @@ const LOG_PATH = path.join(DATA_DIR, 'booking.log');
 const SCREEN_DIR = path.join(DATA_DIR, 'booking_screens');
 const FAILURE_DIR = path.join(DATA_DIR, 'booking_failures');
 
-const DEFAULT_FIRST_NAME = (process.env.BOOKING_FIRST_NAME || 'Olivier').trim() || 'Olivier';
-const DEFAULT_LAST_NAME = (process.env.BOOKING_LAST_NAME || 'Mops').trim() || 'Mops';
+const DEFAULT_FIRST_NAME = (process.env.BOOKING_FIRST_NAME || 'Prénom').trim() || 'Prénom';
+const DEFAULT_LAST_NAME = (process.env.BOOKING_LAST_NAME || 'Nom').trim() || 'Nom';
 const DEFAULT_FULL_NAME = (process.env.BOOKING_FULL_NAME || `${DEFAULT_FIRST_NAME} ${DEFAULT_LAST_NAME}`).trim() || `${DEFAULT_FIRST_NAME} ${DEFAULT_LAST_NAME}`;
-const DEFAULT_PHONE = (process.env.BOOKING_PHONE || '0691243236').trim() || '0691243236';
+const DEFAULT_PHONE = (process.env.BOOKING_PHONE || '0600000000').trim() || '0600000000';
 const DEFAULT_GENDER = (process.env.BOOKING_GENDER || 'Homme').trim() || 'Homme';
 const DEFAULT_HEADLESS = headlessFromEnv('PLAYWRIGHT_HEADLESS', true);
 const DEFAULT_SLOWMO = envNumber('PLAYWRIGHT_SLOWMO', 200);
@@ -28,7 +28,7 @@ function defaultState() {
   return {
     running: false,
     status: 'idle',
-    mode: 'auto_confirm',
+    mode: 'human_approved',
     event_url: null,
     product_name: null,
     ticket_count: 0,
@@ -40,6 +40,13 @@ function defaultState() {
     confirmation_text: null,
   };
 }
+function atomicWriteJson(filePath, value) {
+  ensureDir(path.dirname(filePath));
+  const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(value, null, 2), { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(temporary, filePath);
+}
+
 function writeState(fields = {}) {
   ensureDir(DATA_DIR);
   let state = defaultState();
@@ -47,7 +54,7 @@ function writeState(fields = {}) {
     try { state = { ...state, ...JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')) }; } catch {}
   }
   state = { ...state, ...fields };
-  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2), 'utf8');
+  atomicWriteJson(STATE_PATH, state);
 }
 function logLine(message) {
   ensureDir(DATA_DIR);
@@ -315,8 +322,8 @@ async function runPrepare(eventUrl, ticketCount, email, productName) {
   let lastStepName = 'start';
   let lastIntent = 'start';
   let lastSelectors = [];
-  writeState({ running: true, status: 'running', mode: 'auto_confirm', event_url: eventUrl, product_name: productName, ticket_count: ticketCount, email, started_at: startedAt, finished_at: null, last_error: null, confirmation_text: null });
-  logLine(`[kiwol] Starting auto-confirm flow: ${eventUrl} / ${productName} / qty=${ticketCount} / email=${email}`);
+  writeState({ running: true, status: 'running', mode: 'human_approved', event_url: eventUrl, product_name: productName, ticket_count: ticketCount, email, started_at: startedAt, finished_at: null, last_error: null, confirmation_text: null });
+  logLine(`[kiwol] Starting human-approved flow: ${eventUrl} / ${productName} / qty=${ticketCount} / email=${email}`);
   const { browser, page } = await newBrowserPage(chromium, {
     headless: DEFAULT_HEADLESS,
     slowMo: DEFAULT_SLOWMO,
