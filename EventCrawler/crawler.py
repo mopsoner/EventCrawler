@@ -16,6 +16,17 @@ from config_store import load_config
 from source_profiles import SOURCE_PROFILES, detect_source, normalize_event_url, parse_event_ref
 from security import validate_external_url
 from storage import atomic_write_json, connect_sqlite
+from bizouk_quality import (
+    EventValidationError,
+    QualityReport,
+    clean_subtitle,
+    clean_text,
+    normalize_event_date,
+    normalize_guadeloupe_city,
+    normalize_phone,
+    page_rejection_reason,
+    validate_bizouk_event,
+)
 
 DB_PATH = "data/eventcrawler.sqlite"
 BIZOUK_BASE_URL = "https://www.bizouk.com"
@@ -67,7 +78,7 @@ def stable_product_key(source, product_name, numeric_price):
 
 
 def normalize_text(text):
-    return re.sub(r"\s+", " ", (text or "").strip())
+    return clean_text(text) or ""
 
 
 def digits_only_count(text):
@@ -155,6 +166,7 @@ def init_db():
     for col, ddl in [
         ("event_external_id", "event_external_id TEXT"),
         ("event_slug", "event_slug TEXT"),
+        ("event_end_date", "event_end_date TEXT"),
         ("contact_website", "contact_website TEXT"),
         ("event_image", "event_image TEXT"),
         ("subtitle", "subtitle TEXT"),
@@ -287,10 +299,11 @@ def extract_email(text):
 
 
 def extract_phone(text):
-    candidates = re.findall(r"(\+?\d[\d\s().-]{7,}\d)", text or "")
+    candidates = re.findall(r"(['\"]?(?:\+|00)?\d[\d\s().'\"-]{7,}\d)", text or "")
     for cand in candidates:
-        if digits_only_count(cand) >= 9:
-            return re.sub(r"\s+", "", cand).strip()
+        normalized = normalize_phone(cand)
+        if normalized:
+            return normalized
     return None
 
 
@@ -322,7 +335,7 @@ def extract_description(soup, lines):
     # server-rendered event copy lives in this stable container.
     description_node = soup.select_one("#party_description")
     if description_node:
-        text = normalize_text(description_node.get_text(" ", strip=True))
+        text = clean_text(description_node.get_text("\n", strip=True), multiline=True)
         if text:
             return text[:4000]
     for i, line in enumerate(lines):
@@ -460,23 +473,28 @@ def looks_like_date_line(text):
 
 
 def extract_header_fields(soup):
-    h1 = soup.select_one(".evh-hero-title") or soup.find("h1")
-    h2 = soup.select_one(".evh-hero-subtitle") or soup.find("h2")
+    h1 = soup.select_one(".evh-hero h1.evh-hero-title, h1.evh-hero-title, [itemtype$='/Event'] [itemprop='name']") or soup.find("h1")
+    h2 = soup.select_one(".evh-hero .evh-hero-subtitle, .evh-hero-subtitle") or soup.find("h2")
     name = normalize_text(h1.get_text(" ", strip=True)) if h1 else None
-    subtitle = normalize_text(h2.get_text(" ", strip=True)) if h2 else None
+    subtitle = clean_subtitle(h2.get_text(" ", strip=True)) if h2 else None
     hero_meta = soup.select_one(".evh-hero-meta")
     date_node = soup.select_one("time[datetime], [itemprop='startDate']")
     if not date_node and hero_meta:
         date_node = next((node for node in hero_meta.select(".evh-hero-meta-item") if node.select_one(".fa-calendar")), None)
     date_node = date_node or soup.select_one("[class*='event-date'], [class*='date'], [class*='time']")
-    location_node = soup.select_one("[itemprop='location']")
+    location_node = soup.select_one("[itemprop='addressLocality']")
+    location_node = location_node or soup.select_one("[itemprop='location']")
     if not location_node and hero_meta:
         location_node = next((node for node in hero_meta.select(".evh-hero-meta-item") if node.select_one(".fa-map-marker")), None)
-    location_node = location_node or soup.select_one("[class*='event-location'], [class*='venue'], [class*='location']")
+    location_node = location_node or soup.select_one(".evh-hero [class*='event-location'], [itemtype$='/Event'] [class*='location']")
     address_node = soup.select_one("[itemprop='streetAddress'], address, [class*='event-address'], [class*='address']")
     date_text = normalize_text(date_node.get_text(" ", strip=True)) if date_node else None
     city = normalize_text(location_node.get_text(" ", strip=True)) if location_node else None
     address = normalize_text(address_node.get_text(" ", strip=True)) if address_node else None
+    if city and "·" in city:
+        # Current Bizouk hero renders "venue · commune". Keep the venue apart.
+        venue, city = [normalize_text(part) for part in city.rsplit("·", 1)]
+        address = venue or address
     search_root = None
     if h1:
         parent = h1.parent
@@ -785,7 +803,8 @@ def jsonld_event_fields(json_event):
     return {
         "name": normalize_text(json_event.get("name")),
         "description": normalize_text(json_event.get("description"))[:4000] or None,
-        "event_date": format_kiwol_event_date(json_event),
+        "event_date": clean_text(json_event.get("startDate")) or format_kiwol_event_date(json_event),
+        "event_end_date": clean_text(json_event.get("endDate")),
         "subtitle": normalize_text(organizer.get("name")) if isinstance(organizer, dict) else None,
         "city": normalize_text(address.get("addressLocality")) if isinstance(address, dict) else None,
         "address": normalize_text(address.get("streetAddress")) if isinstance(address, dict) else None,
@@ -840,6 +859,9 @@ def build_event_from_item(item, session=None):
             raw_soup = BeautifulSoup(fetch_rendered_bizouk_html(url), "html.parser")
         except (subprocess.SubprocessError, OSError):
             pass
+    rejection = page_rejection_reason(raw_soup)
+    if rejection:
+        raise EventValidationError([rejection])
     json_event = extract_jsonld_event(raw_soup)
     structured = jsonld_event_fields(json_event)
     soup = remove_noise(raw_soup)
@@ -853,11 +875,16 @@ def build_event_from_item(item, session=None):
     name = structured.get("name") or header["name"] or normalize_text(title)
     image = structured.get("image") or extract_event_image(soup, base_url=BIZOUK_BASE_URL)
     description = extract_description(soup, lines) or structured.get("description")
-    event_date = structured.get("event_date") or header.get("event_date")
-    city = structured.get("city") or header.get("city")
+    raw_city = structured.get("city") or header.get("city")
+    city = normalize_guadeloupe_city(raw_city)
+    if not city and region not in {"guadeloupe", "kiwol_guadeloupe"}:
+        city = clean_text(raw_city)
+    event_date = normalize_event_date(structured.get("event_date") or header.get("event_date"), region=region, city=city)
+    event_end_date = normalize_event_date(structured.get("event_end_date"), region=region, city=city)
     address = structured.get("address") or structured.get("venue") or header.get("address")
-    subtitle = header.get("subtitle") or structured.get("subtitle")
-    return {"source": source, "event_url": url, "event_url_normalized": normalize_event_url(url, source), "event_slug": slug, "event_external_id": external_id, "region": region, "name": name, "subtitle": subtitle, "description": description, "event_date": event_date, "city": city, "address": address, "contact_phone": contact["contact_phone"], "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": image, "products": products, "score": score_event(name, region, products, contact, bool(image), event_date)}
+    subtitle = clean_subtitle(header.get("subtitle") or structured.get("subtitle"))
+    event = {"source": source, "event_url": url, "event_url_normalized": normalize_event_url(url, source), "event_slug": slug, "event_external_id": external_id, "region": region, "name": clean_text(name), "subtitle": subtitle, "description": clean_text(description, multiline=True), "event_date": event_date, "event_end_date": event_end_date, "city": city, "address": clean_text(address), "contact_phone": normalize_phone(contact["contact_phone"]), "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": image, "products": products, "score": score_event(name, region, products, contact, bool(image), event_date)}
+    return validate_bizouk_event(event)
 
 
 def worker(item):
@@ -886,6 +913,8 @@ def find_existing_event(cur, event):
 
 
 def upsert_event(event):
+    if (event.get("source") or detect_source(event.get("event_url"))) == "bizouk":
+        validate_bizouk_event(event)
     c = conn()
     cur = c.cursor()
     source = event.get("source") or detect_source(event.get("event_url"))
@@ -893,9 +922,9 @@ def upsert_event(event):
     row = find_existing_event(cur, event)
     if row:
         event_id = row["id"]
-        cur.execute("UPDATE events SET source=?, event_url=?, event_url_normalized=?, event_external_id=?, event_slug=?, region=?, name=?, subtitle=?, description=?, event_date=?, city=?, address=?, contact_phone=?, contact_email=?, contact_website=?, event_image=?, score=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?", (source, event.get("event_url"), event.get("event_url_normalized"), event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("subtitle"), event.get("description"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0), event_id))
+        cur.execute("UPDATE events SET source=?, event_url=?, event_url_normalized=?, event_external_id=?, event_slug=?, region=?, name=?, subtitle=?, description=?, event_date=?, event_end_date=?, city=?, address=?, contact_phone=?, contact_email=?, contact_website=?, event_image=?, score=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?", (source, event.get("event_url"), event.get("event_url_normalized"), event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("subtitle"), event.get("description"), event.get("event_date"), event.get("event_end_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0), event_id))
     else:
-        cur.execute("INSERT INTO events(source, event_url, event_url_normalized, event_external_id, event_slug, region, name, subtitle, description, event_date, city, address, contact_phone, contact_email, contact_website, event_image, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (source, event.get("event_url"), event.get("event_url_normalized"), event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("subtitle"), event.get("description"), event.get("event_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0)))
+        cur.execute("INSERT INTO events(source, event_url, event_url_normalized, event_external_id, event_slug, region, name, subtitle, description, event_date, event_end_date, city, address, contact_phone, contact_email, contact_website, event_image, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (source, event.get("event_url"), event.get("event_url_normalized"), event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("subtitle"), event.get("description"), event.get("event_date"), event.get("event_end_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0)))
         event_id = cur.lastrowid
     for p in event.get("products", []):
         product_name = p.get("product_name") or "Billet"
@@ -941,6 +970,7 @@ def run():
     all_items = []
     processed = 0
     errors = 0
+    report = QualityReport()
     try:
         for region, start_url in regions.items():
             try:
@@ -951,7 +981,10 @@ def run():
                 all_items.extend(region_items)
             except Exception as exc:
                 errors += 1
+                report.counts["http_errors"] += 1
                 log_crawl_error(crawl_run_id, "region", region, exc)
+        report.counts["duplicates"] = len(all_items) - len({(item.get("source"), item.get("external_id")) for item in all_items})
+        report.counts["pages_processed"] = len(all_items)
         update_crawl_run(crawl_run_id, events_queued=len(all_items))
         if not all_items:
             update_crawl_run(crawl_run_id, finished_at=datetime.utcnow().isoformat(), status="empty", errors_count=errors, notes="No events found")
@@ -966,10 +999,18 @@ def run():
                     event_id = upsert_event(event)
                     save_event_ai_label(event_id, event)
                     processed += 1
+                    report.counts["valid_events"] += 1
+                    report.counts["missing_fields"] += sum(not event.get(field) for field in ("subtitle", "description", "city", "contact_phone", "contact_website"))
                 except Exception as exc:
                     errors += 1
+                    report.reject(exc)
+                    if isinstance(exc, requests.RequestException):
+                        report.counts["http_errors"] += 1
+                    if isinstance(exc, EventValidationError):
+                        report.counts["unrecognized_cities"] += sum("city" in reason for reason in exc.errors)
+                        report.counts["invalid_dates"] += sum("date" in reason for reason in exc.errors)
                     log_crawl_error(crawl_run_id, "event", item.get("url"), exc)
-        update_crawl_run(crawl_run_id, finished_at=datetime.utcnow().isoformat(), status="success", events_processed=processed, errors_count=errors)
+        update_crawl_run(crawl_run_id, finished_at=datetime.utcnow().isoformat(), status="success", events_processed=processed, errors_count=errors, notes=json.dumps(report.as_dict(), ensure_ascii=False, sort_keys=True))
         save_status({"running": False, "regions": selected, "max_workers": MAX_WORKERS, "request_timeout": REQUEST_TIMEOUT, "started_at": None, "finished_at": datetime.utcnow().isoformat(), "last_error": None})
     except Exception as exc:
         errors += 1
