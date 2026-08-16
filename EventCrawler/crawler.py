@@ -321,6 +321,13 @@ def extract_event_image(soup, base_url=BIZOUK_BASE_URL):
 
 
 def extract_description(soup, lines):
+    # The meta/JSON-LD description is shortened by Bizouk.  The complete,
+    # server-rendered event copy lives in this stable container.
+    description_node = soup.select_one("#party_description")
+    if description_node:
+        text = normalize_text(description_node.get_text(" ", strip=True))
+        if text:
+            return text[:4000]
     for i, line in enumerate(lines):
         low = line.lower()
         if low in {"description", "descriptif", "about", "details"}:
@@ -456,12 +463,19 @@ def looks_like_date_line(text):
 
 
 def extract_header_fields(soup):
-    h1 = soup.find("h1")
-    h2 = soup.find("h2")
+    h1 = soup.select_one(".evh-hero-title") or soup.find("h1")
+    h2 = soup.select_one(".evh-hero-subtitle") or soup.find("h2")
     name = normalize_text(h1.get_text(" ", strip=True)) if h1 else None
     subtitle = normalize_text(h2.get_text(" ", strip=True)) if h2 else None
-    date_node = soup.select_one("time[datetime], [itemprop='startDate'], [class*='event-date'], [class*='date'], [class*='time']")
-    location_node = soup.select_one("[itemprop='location'], [class*='event-location'], [class*='venue'], [class*='location']")
+    hero_meta = soup.select_one(".evh-hero-meta")
+    date_node = soup.select_one("time[datetime], [itemprop='startDate']")
+    if not date_node and hero_meta:
+        date_node = next((node for node in hero_meta.select(".evh-hero-meta-item") if node.select_one(".fa-calendar")), None)
+    date_node = date_node or soup.select_one("[class*='event-date'], [class*='date'], [class*='time']")
+    location_node = soup.select_one("[itemprop='location']")
+    if not location_node and hero_meta:
+        location_node = next((node for node in hero_meta.select(".evh-hero-meta-item") if node.select_one(".fa-map-marker")), None)
+    location_node = location_node or soup.select_one("[class*='event-location'], [class*='venue'], [class*='location']")
     address_node = soup.select_one("[itemprop='streetAddress'], address, [class*='event-address'], [class*='address']")
     date_text = normalize_text(date_node.get_text(" ", strip=True)) if date_node else None
     city = normalize_text(location_node.get_text(" ", strip=True)) if location_node else None
@@ -497,6 +511,18 @@ def extract_header_fields(soup):
 
 
 def extract_contact_info(soup, lines):
+    panel = soup.select_one(".evh-contact-panel")
+    if panel:
+        phone_row = panel.select_one(".fa-phone")
+        email_link = panel.select_one("a[href^='mailto:']")
+        website_link = panel.select_one(".fa-globe")
+        phone_text = phone_row.parent.get_text(" ", strip=True) if phone_row and phone_row.parent else ""
+        website_anchor = website_link.parent.select_one("a[href]") if website_link and website_link.parent else None
+        return {
+            "contact_phone": extract_phone(phone_text),
+            "contact_email": (email_link.get("href") or "").removeprefix("mailto:") or None if email_link else None,
+            "contact_website": website_anchor.get("href") if website_anchor else None,
+        }
     candidate_lines = []
     for i, line in enumerate(lines):
         low = line.lower()
@@ -559,7 +585,9 @@ def dedupe_products(products, source="bizouk"):
 
 def availability_from_node(node, blob):
     low = blob.lower()
-    disabled = node.has_attr("disabled") or str(node.get("aria-disabled", "")).lower() == "true" or bool(node.select_one("[disabled], [aria-disabled='true']"))
+    # Quantity minus buttons are disabled while the cart quantity is zero; it
+    # does not mean that a Bizouk tariff is unavailable.
+    disabled = node.has_attr("disabled") or str(node.get("aria-disabled", "")).lower() == "true" or bool(node.select_one("[aria-disabled='true'], input[disabled], button.qty-plus[disabled]"))
     if disabled or any(word in low for word in ["sold out", "épuisé", "epuise", "indisponible", "complet"]):
         return False
     if any(word in low for word in ["upcoming", "à venir", "a venir"]):
@@ -576,7 +604,11 @@ def product_from_node(node, source, profile=None):
             price_node = node.select_one(selector)
             if price_node:
                 break
-    price_value = price_node.get("data-price") if price_node and price_node.get("data-price") is not None else None
+    price_value = None
+    if price_node:
+        price_value = price_node.get("data-base-price")
+        if price_value is None:
+            price_value = price_node.get("data-price")
     price_text = normalize_text(price_node.get_text(" ", strip=True)) if price_node else None
     price = parse_price(price_value if price_value is not None else price_text)
     if price is None:
@@ -587,8 +619,17 @@ def product_from_node(node, source, profile=None):
     if price is None:
         return None
     name = None
+    if source == "bizouk":
+        # The label is the span immediately before Bizouk's details control.
+        # Names often contain a time ("avant 17H") or a capacity
+        # ("4 personnes"), so the generic ``parse_price`` name filter cannot
+        # safely be used for these explicit labels.
+        detail = node.select_one(".priceDetail[product]")
+        label = detail.find_previous_sibling("span") if detail else None
+        if label:
+            name = normalize_text(label.get_text(" ", strip=True))
     if profile:
-        for selector in profile.product_name_selectors:
+        for selector in profile.product_name_selectors if not name else ():
             name_node = node.select_one(selector)
             if name_node:
                 candidate = normalize_text(name_node.get_text(" ", strip=True))
@@ -616,12 +657,20 @@ def extract_products_from_dom(soup, source="bizouk"):
     # Prefer leaf-most ticket cards: parents commonly aggregate several prices.
     targeted_ids = {id(node) for node in targeted_nodes}
     leaf_nodes = [node for node in targeted_nodes if not any(id(child) in targeted_ids for child in node.find_all())]
+    if source == "bizouk":
+        ticket_nodes = []
+        for price_node in soup.select(".produit_prix[data-product-price]"):
+            card = price_node.find_parent(class_="panel-body") or price_node.parent
+            if card and card not in ticket_nodes:
+                ticket_nodes.append(card)
+        leaf_nodes = ticket_nodes or leaf_nodes
     for node in leaf_nodes:
         product = product_from_node(node, source, profile)
         if product and product["product_key"] not in raw_seen:
             raw_seen.add(product["product_key"])
             products.append(product)
-    for div in soup.find_all(["div", "section", "article", "li"]):
+    fallback_nodes = [] if source == "bizouk" and products else soup.find_all(["div", "section", "article", "li"])
+    for div in fallback_nodes:
         text = normalize_text(div.get_text(" ", strip=True))
         if not text or not re.search(r"(?:€|\beur\b|\beuros?\b|\bgratuit\b|\bfree\b)", text, re.I) or len(text) > 650:
             continue
@@ -823,15 +872,17 @@ def build_event_from_item(item, session=None):
     lines = lines_from_soup(soup)
     header = extract_header_fields(soup)
     contact = extract_contact_info(soup, lines)
-    products = extract_products_from_jsonld(json_event or {}, source) or extract_products_from_dom(soup, source)
+    # The DOM contains base prices and sold-out tariffs. Bizouk's JSON-LD
+    # instead exposes fee-inclusive prices and omits unavailable products.
+    products = extract_products_from_dom(soup, source) or extract_products_from_jsonld(json_event or {}, source)
     title = soup.title.get_text(" ", strip=True) if soup.title else url
     name = structured.get("name") or header["name"] or normalize_text(title)
     image = structured.get("image") or extract_event_image(soup, base_url=BIZOUK_BASE_URL)
-    description = structured.get("description") or extract_description(soup, lines)
+    description = extract_description(soup, lines) or structured.get("description")
     event_date = structured.get("event_date") or header.get("event_date")
     city = structured.get("city") or header.get("city")
     address = structured.get("address") or structured.get("venue") or header.get("address")
-    subtitle = structured.get("subtitle") or header.get("subtitle")
+    subtitle = header.get("subtitle") or structured.get("subtitle")
     return {"source": source, "event_url": url, "event_url_normalized": normalize_event_url(url, source), "event_slug": slug, "event_external_id": external_id, "region": region, "name": name, "subtitle": subtitle, "description": description, "event_date": event_date, "city": city, "address": address, "contact_phone": contact["contact_phone"], "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": image, "products": products, "score": score_event(name, region, products, contact, bool(image), event_date)}
 
 
