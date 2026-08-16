@@ -73,6 +73,15 @@ The generated JSON is useful before changing crawler selectors or booking Playwr
 
 The Bizouk and Kiwol booking helpers now share the same Playwright launch/context defaults through `playwright_helpers.js`: headless mode is controlled by `PLAYWRIGHT_HEADLESS`, slow motion by `PLAYWRIGHT_SLOWMO`, and every run uses a French locale, Antilles timezone, browser-like headers, and container-safe Chromium flags.
 
+## Bizouk data quality
+
+Bizouk event pages are accepted only when their event identity and required fields
+pass validation. Text, Guadeloupe communes, French/Guadeloupe phone numbers and
+local wall times are normalized before persistence; rejected pages remain in
+`crawl_errors`. The JSON quality summary for each run is stored in
+`crawl_runs.notes`. The additive `events.event_end_date` column stores an ISO 8601
+end date when Bizouk supplies one and is created automatically by `init_db()`.
+
 ```bash
 cd EventCrawler
 npm run book:bizouk -- --event-url "https://www.bizouk.com/events/details/<slug>/<id>" --ticket-count 1 --email "client@example.com" --product-name "Nom du billet"
