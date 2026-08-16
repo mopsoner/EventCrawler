@@ -44,9 +44,12 @@ SOURCE_PROFILES = {
         event_url_re=re.compile(r"/events/details/(?P<slug>[^/]+)/(?P<id>\d+)"),
         event_link_selectors=("a[href*='/events/details/']",),
         event_path_marker="/events/details/",
-        product_selectors=("[class*='ticket']", "[class*='billet']", "[data-ticket-id]", "[data-product-id]"),
+        # Bizouk's current event page identifies a tariff by the price row.
+        # Generic ``ticket`` class matches also select buttons, totals and the
+        # cart, which used to create phantom products.
+        product_selectors=(".produit_prix[data-product-price]", "[data-ticket-id]", "[data-product-id]", ".ticket-card", ".billet-card"),
         product_name_selectors=("[class*='name']", "[class*='title']", "h3", "h4", "strong"),
-        price_selectors=("[class*='price']", "[data-price]"),
+        price_selectors=(".product-price-base", "[data-base-price]", "[class*='price']", "[data-price]"),
         availability_selectors=("[class*='status']", "[class*='availability']", "button", "input"),
     ),
     "kiwol": SourceProfile(
