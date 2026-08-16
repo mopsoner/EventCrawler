@@ -9,11 +9,20 @@ const LOG_PATH = path.join(DATA_DIR, 'booking.log');
 const SCREEN_DIR = path.join(DATA_DIR, 'booking_screens');
 const FAILURE_DIR = path.join(DATA_DIR, 'booking_failures');
 
-const DEFAULT_FIRST_NAME = (process.env.BOOKING_FIRST_NAME || 'Prénom').trim() || 'Prénom';
-const DEFAULT_LAST_NAME = (process.env.BOOKING_LAST_NAME || 'Nom').trim() || 'Nom';
-const DEFAULT_FULL_NAME = (process.env.BOOKING_FULL_NAME || `${DEFAULT_FIRST_NAME} ${DEFAULT_LAST_NAME}`).trim() || `${DEFAULT_FIRST_NAME} ${DEFAULT_LAST_NAME}`;
-const DEFAULT_PHONE = (process.env.BOOKING_PHONE || '0600000000').trim() || '0600000000';
-const DEFAULT_GENDER = (process.env.BOOKING_GENDER || 'Homme').trim() || 'Homme';
+function storedBookingProfile() {
+  try {
+    const config = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'config.json'), 'utf8'));
+    return config && typeof config.booking_profile === 'object' ? config.booking_profile : {};
+  } catch {
+    return {};
+  }
+}
+const STORED_BOOKING_PROFILE = storedBookingProfile();
+const DEFAULT_FIRST_NAME = (process.env.BOOKING_FIRST_NAME || STORED_BOOKING_PROFILE.first_name || 'Prénom').trim() || 'Prénom';
+const DEFAULT_LAST_NAME = (process.env.BOOKING_LAST_NAME || STORED_BOOKING_PROFILE.last_name || 'Nom').trim() || 'Nom';
+const DEFAULT_FULL_NAME = (process.env.BOOKING_FULL_NAME || STORED_BOOKING_PROFILE.full_name || `${DEFAULT_FIRST_NAME} ${DEFAULT_LAST_NAME}`).trim() || `${DEFAULT_FIRST_NAME} ${DEFAULT_LAST_NAME}`;
+const DEFAULT_PHONE = (process.env.BOOKING_PHONE || STORED_BOOKING_PROFILE.phone || '0600000000').trim() || '0600000000';
+const DEFAULT_GENDER = (process.env.BOOKING_GENDER || STORED_BOOKING_PROFILE.gender || 'Homme').trim() || 'Homme';
 const DEFAULT_HEADLESS = headlessFromEnv('PLAYWRIGHT_HEADLESS', true);
 const DEFAULT_SLOWMO = envNumber('PLAYWRIGHT_SLOWMO', 200);
 const SCREENSHOTS_ENABLED = process.env.PLAYWRIGHT_SCREENSHOTS === '1';
@@ -301,6 +310,7 @@ async function selectGender(page) {
   }
 }
 async function fillFormByLabels(page, email) {
+  let filledInputs = 0;
   const labels = await page.locator('label[for]').all();
   for (const label of labels) {
     const forId = await label.getAttribute('for');
@@ -317,7 +327,7 @@ async function fillFormByLabels(page, email) {
     else if (labelText.includes('full') && labelText.includes('name')) value = DEFAULT_FULL_NAME;
     else if (labelText.includes('email') || labelText.includes('e-mail') || labelText.includes('courriel')) value = email;
     else if (labelText.includes('phone') || labelText.includes('portable') || labelText.includes('mobile') || labelText.includes('tel') || labelText.includes('téléphone')) value = DEFAULT_PHONE;
-    if (value !== null) { try { await input.fill(value); } catch {} }
+    if (value !== null) { try { await input.fill(value); filledInputs++; } catch {} }
   }
   const groups = [
     [DEFAULT_FIRST_NAME, ["input[name*='firstname']","input[name*='first_name']","input[id*='firstname']","input[id*='first_name']"]],
@@ -328,10 +338,17 @@ async function fillFormByLabels(page, email) {
   ];
   for (const [val, selectors] of groups) {
     for (const sel of selectors) {
-      try { const loc = page.locator(sel); if (await loc.count() && await loc.first().isVisible()) await loc.first().fill(val); } catch {}
+      try {
+        const loc = page.locator(sel);
+        for (let index = 0; index < await loc.count(); index++) {
+          const input = loc.nth(index);
+          if (await input.isVisible()) { await input.fill(val); filledInputs++; }
+        }
+      } catch {}
     }
   }
   await selectGender(page);
+  logLine(`Filled attendee form: first_name=${DEFAULT_FIRST_NAME} last_name=${DEFAULT_LAST_NAME} inputs=${filledInputs} URL=${page.url()}`);
 }
 async function selectRadioDefaults(page) {
   try {
