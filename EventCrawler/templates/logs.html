@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+{% block title %}Logs · EventCrawler{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div><div class="eyebrow">Supervision</div><h1>Logs & workers</h1><p>Suivez l’état des processus, les erreurs de crawl et les dernières sorties techniques. La page se rafraîchit toutes les 15 secondes.</p></div>
+  <button id="refresh-logs" class="btn btn-secondary" type="button">Actualiser</button>
+</section>
+<section class="stats-grid">
+  {% for worker in workers %}<article class="stat-card">
+    <div class="stat-label">{{ worker.name }}</div>
+    <div><span class="badge {{ 'badge-success' if worker.running else ('badge-warning' if worker.status not in ['idle', 'disabled', 'completed'] else '') }}">{{ worker.status }}</span></div>
+    <div class="stat-small worker-detail">{{ worker.detail }}</div><div class="cell-sub worker-updated">{{ worker.updated_at or 'Jamais exécuté' }}</div>
+  </article>{% endfor %}
+</section>
+<section class="panel">
+  <div class="panel-header"><div><h2>Erreurs du crawler</h2><p>Erreurs persistées par page, région ou étape.</p></div></div>
+  <div class="toolbar"><input id="error-search" class="toolbar-input" type="text" placeholder="Rechercher une cible, une erreur, une région…"><select id="error-scope" class="toolbar-select"><option value="">Tous les types</option>{% for scope in errors|map(attribute='scope')|reject('equalto', None)|unique|list|sort %}<option value="{{ scope }}">{{ scope }}</option>{% endfor %}</select><button id="error-reset" class="btn btn-secondary" type="button">Reset</button></div>
+  <div class="table-wrap"><table class="table" id="errors-table"><thead><tr><th data-sort="created">Date</th><th data-sort="scope">Type</th><th>Cible</th><th>Erreur</th><th>Run</th></tr></thead><tbody>
+    {% for error in errors %}<tr data-created="{{ error.created_at or '' }}" data-scope="{{ error.scope or '' }}" data-search="{{ ((error.target or '') ~ ' ' ~ (error.error_text or '') ~ ' ' ~ (error.regions or ''))|lower }}"><td>{{ error.created_ago }}</td><td><span class="badge badge-danger">{{ error.scope or 'inconnu' }}</span></td><td class="log-target">{{ error.target or '—' }}</td><td class="log-error">{{ error.error_text or '—' }}</td><td>#{{ error.crawl_run_id or '—' }}<div class="cell-sub">{{ error.run_status or '—' }} · {{ error.regions or '—' }}</div></td></tr>{% else %}<tr><td colspan="5" class="empty-state">Aucune erreur enregistrée.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+<section class="log-grid">{% for name, lines in logs.items() %}<article class="panel"><div class="panel-header"><div><h2>Log {{ name }}</h2><p>Les {{ lines|length }} dernières lignes disponibles.</p></div></div><pre class="log-console">{{ lines|join('\n') if lines else 'Aucune sortie disponible.' }}</pre></article>{% endfor %}</section>
+{% endblock %}
+{% block extra_scripts %}
+<script src="{{ url_for('static', filename='table.js') }}"></script><script>
+initDataTable('errors-table', {searchId: 'error-search', resetId: 'error-reset', filters: [{id: 'error-scope', dataset: 'scope'}]});
+document.getElementById('refresh-logs').addEventListener('click', () => window.location.reload());
+window.setTimeout(() => window.location.reload(), 15000);
+</script>
+{% endblock %}
