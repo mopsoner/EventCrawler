@@ -16,6 +16,9 @@ from config_store import load_config
 from source_profiles import SOURCE_PROFILES, detect_source, normalize_event_url, parse_event_ref
 from security import validate_external_url
 from storage import atomic_write_json, connect_sqlite
+from opportunity_scoring import (classify_product, ensure_opportunity_schema,
+                                 product_identity_key, record_price_variation,
+                                 refresh_family_opportunities)
 from bizouk_quality import (
     EventValidationError,
     QualityReport,
@@ -73,8 +76,7 @@ def stable_text_key(value):
 
 
 def stable_product_key(source, product_name, numeric_price):
-    price = "unknown" if numeric_price is None else f"{float(numeric_price):.2f}"
-    return f"{source}:{stable_text_key(product_name)}:{price}"
+    return product_identity_key(source, product_name)
 
 
 def normalize_text(text):
@@ -163,6 +165,7 @@ def init_db():
         );
         '''
     )
+    ensure_opportunity_schema(cur)
     for col, ddl in [
         ("event_external_id", "event_external_id TEXT"),
         ("event_slug", "event_slug TEXT"),
@@ -186,6 +189,9 @@ def init_db():
         ("is_early_bird", "is_early_bird INTEGER DEFAULT 0"),
         ("early_bird_confidence", "early_bird_confidence TEXT"),
         ("early_bird_reason", "early_bird_reason TEXT"),
+        ("capacity", "capacity INTEGER"),
+        ("product_kind", "product_kind TEXT"),
+        ("unit_price", "unit_price REAL"),
     ]:
         ensure_column(cur, "products", col, ddl)
 
@@ -203,7 +209,10 @@ def init_db():
             ev = cur.execute("SELECT COALESCE(source, 'bizouk') AS source FROM events WHERE id=?", (row["event_id"],)).fetchone()
             source = ev["source"] if ev else "bizouk"
         product_key = stable_product_key(source, row["product_name"], row["numeric_price"])
-        cur.execute("UPDATE products SET source=?, product_key=? WHERE id=?", (source, product_key, row["id"]))
+        classification = classify_product(row["product_name"])
+        unit_price = (row["numeric_price"] / classification["capacity"]) if row["numeric_price"] is not None and classification["capacity"] else row["numeric_price"]
+        cur.execute("UPDATE products SET source=?, product_key=?, family_key=?, capacity=?, product_kind=?, unit_price=?, is_early_bird=?, early_bird_score=?, early_bird_confidence=?, early_bird_reason=? WHERE id=?",
+                    (source, product_key, classification["family_key"], classification["capacity"], classification["kind"], unit_price, classification["is_early_bird"], classification["early_bird_score"], classification["early_bird_confidence"], classification["early_bird_reason"], row["id"]))
 
     cur.execute("CREATE INDEX IF NOT EXISTS idx_events_source_external_id ON events(source, event_external_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_events_source_normalized_url ON events(source, event_url_normalized)")
@@ -933,6 +942,8 @@ def upsert_event(event):
         price_text = p.get("price_text") or price_text_from_value(numeric_price, "EUR")
         avail = 1 if p.get("is_available") is True else 0 if p.get("is_available") is False else None
         is_free = 1 if p.get("is_free") else 0
+        classification = classify_product(product_name)
+        unit_price = (numeric_price / classification["capacity"]) if numeric_price is not None and classification["capacity"] else numeric_price
         old = cur.execute("SELECT id, numeric_price, is_free, is_available FROM products WHERE event_id=? AND product_key=? ORDER BY id ASC LIMIT 1", (event_id, product_key)).fetchone()
         if not old:
             old = cur.execute("SELECT id, numeric_price, is_free, is_available FROM products WHERE event_id=? AND product_name=? AND price_text=? ORDER BY id ASC LIMIT 1", (event_id, product_name, price_text)).fetchone()
@@ -940,7 +951,7 @@ def upsert_event(event):
             old_price = old["numeric_price"]
             old_is_free = old["is_free"]
             old_is_available = old["is_available"]
-            cur.execute("UPDATE products SET source=?, product_key=?, product_name=?, price_text=?, numeric_price=?, is_free=?, is_available=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?", (source, product_key, product_name, price_text, numeric_price, is_free, avail, old["id"]))
+            cur.execute("UPDATE products SET source=?, product_key=?, product_name=?, price_text=?, numeric_price=?, is_free=?, is_available=?, family_key=?, capacity=?, product_kind=?, unit_price=?, is_early_bird=?, early_bird_score=?, early_bird_confidence=?, early_bird_reason=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?", (source, product_key, product_name, price_text, numeric_price, is_free, avail, classification["family_key"], classification["capacity"], classification["kind"], unit_price, classification["is_early_bird"], classification["early_bird_score"], classification["early_bird_confidence"], classification["early_bird_reason"], old["id"]))
             if old_price != numeric_price or old_is_free != is_free or old_is_available != avail:
                 change_type = "STATUS_CHANGE"
                 if old_price != numeric_price:
@@ -950,12 +961,27 @@ def upsert_event(event):
                 elif old_is_free != is_free:
                     change_type = "FREE_CHANGE"
                 record_product_change(cur, event_id, product_name, change_type, old_price, numeric_price, old_is_free, is_free, old_is_available, avail)
+                if old_price != numeric_price:
+                    record_price_variation(cur, event_id, old["id"], old_price, numeric_price)
         else:
             try:
-                cur.execute("INSERT INTO products(event_id, source, product_key, product_name, price_text, numeric_price, is_free, is_available) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (event_id, source, product_key, product_name, price_text, numeric_price, is_free, avail))
+                cur.execute("INSERT INTO products(event_id, source, product_key, product_name, price_text, numeric_price, is_free, is_available, family_key, capacity, product_kind, unit_price, is_early_bird, early_bird_score, early_bird_confidence, early_bird_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (event_id, source, product_key, product_name, price_text, numeric_price, is_free, avail, classification["family_key"], classification["capacity"], classification["kind"], unit_price, classification["is_early_bird"], classification["early_bird_score"], classification["early_bird_confidence"], classification["early_bird_reason"]))
                 record_product_change(cur, event_id, product_name, "NEW_PRODUCT", None, numeric_price, None, is_free, None, avail)
             except sqlite3.IntegrityError:
                 cur.execute("UPDATE products SET source=?, product_key=?, numeric_price=?, is_free=?, is_available=?, last_seen_at=CURRENT_TIMESTAMP WHERE event_id=? AND product_name=? AND price_text=?", (source, product_key, numeric_price, is_free, avail, event_id, product_name, price_text))
+        if avail == 0:
+            current = cur.execute(
+                "SELECT id FROM products WHERE event_id=? AND product_key=? ORDER BY id LIMIT 1",
+                (event_id, product_key),
+            ).fetchone()
+            if current:
+                cur.execute(
+                    """UPDATE price_opportunities
+                       SET is_active=0, resolved_at=CURRENT_TIMESTAMP
+                       WHERE event_id=? AND product_id=? AND is_active=1""",
+                    (event_id, current["id"]),
+                )
+    refresh_family_opportunities(cur, event_id)
     c.commit()
     c.close()
     return event_id
