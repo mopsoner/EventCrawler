@@ -117,6 +117,47 @@ class WebSecurityTests(unittest.TestCase):
         self.assertEqual(confirmed.json["status"], "started")
         self.assertEqual(replayed.status_code, 400)
 
+    def test_clear_database_requires_confirmation_and_removes_rows_and_images(self):
+        self.client.get("/config", headers={"Authorization": self.auth})
+        with self.client.session_transaction() as flask_session:
+            token = flask_session["csrf_token"]
+        headers = {"Authorization": self.auth, "X-CSRF-Token": token}
+
+        rejected = self.client.post(
+            "/config/clear-database", data={"confirmation": "non"}, headers=headers
+        )
+        self.assertEqual(rejected.status_code, 400)
+
+        connection = self.module.conn()
+        connection.execute(
+            "INSERT OR IGNORE INTO events(event_url, name) VALUES (?, ?)",
+            ("https://www.bizouk.com/events/details/to-delete/99", "À supprimer"),
+        )
+        connection.commit()
+        connection.close()
+        image_path = Path("data/booking_screens/test.png")
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        image_path.write_bytes(b"image")
+        failure_path = Path("data/booking_failures/test.json")
+        failure_path.parent.mkdir(parents=True, exist_ok=True)
+        failure_path.write_text("{}", encoding="utf-8")
+
+        response = self.client.post(
+            "/config/clear-database", data={"confirmation": "VIDER"}, headers=headers
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("database_cleared=1", response.location)
+        connection = self.module.conn()
+        for table in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall():
+            count = connection.execute(f'SELECT COUNT(*) FROM "{table[0]}"').fetchone()[0]
+            self.assertEqual(count, 0, table[0])
+        connection.close()
+        self.assertFalse(image_path.exists())
+        self.assertFalse(failure_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
