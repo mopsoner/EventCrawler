@@ -129,7 +129,13 @@ async function saveFailureReport(page, report) {
     fs.writeFileSync(path.join(FAILURE_DIR, name), JSON.stringify(payload, null, 2), 'utf8');
   } catch {}
 }
-const IGNORED_PRODUCT_WORDS = new Set(['entry', 'ticket', 'billet', 'invitation', 'valid', 'until', 'free', 'gratuit']);
+const IGNORED_PRODUCT_WORDS = new Set(['entry', 'entrance', 'entree', 'ticket', 'billet', 'invitation', 'valid', 'valable', 'until', 'jusqu', 'jusqua', 'free', 'gratuit', 'gratuite', 'with', 'avec', 'by', 'par']);
+const PRODUCT_TOKEN_ALIASES = new Map([
+  ['simple', 'single'], ['seul', 'single'], ['seule', 'single'],
+  ['boisson', 'drink'], ['consommation', 'drink'], ['conso', 'drink'],
+  ['offert', 'free'], ['offerte', 'free'], ['offerts', 'free'], ['offertes', 'free'],
+  ['21h', '9pm'], ['21', '9pm'],
+]);
 const PLUS_SELECTORS = [
   "button:has-text('+')", "a:has-text('+')", "[role='button']:has-text('+')",
   "button[aria-label*='plus' i]", "button[aria-label*='add' i]", "button[aria-label*='ajouter' i]",
@@ -144,11 +150,20 @@ function productMatches(candidateText, productName) {
   const product = normalizeLabel(productName);
   if (!candidate || !product) return false;
   if (candidate.includes(product) || product.includes(candidate)) return true;
-  const tokens = value => [...new Set(value.split(' ').filter(token => token.length > 1 && !IGNORED_PRODUCT_WORDS.has(token)))];
+  const rawTokens = value => [...new Set(value.split(' ').filter(token => token.length > 1))];
+  const tokens = value => rawTokens(value)
+    .filter(token => !IGNORED_PRODUCT_WORDS.has(token))
+    .map(token => PRODUCT_TOKEN_ALIASES.get(token) || token);
   const wanted = tokens(product);
   const found = new Set(tokens(candidate));
-  if (!wanted.length) return candidate.split(' ').some(token => product.split(' ').includes(token));
-  return wanted.filter(token => found.has(token)).length >= Math.ceil(wanted.length * 0.6);
+  if (wanted.length && wanted.filter(token => found.has(token)).length >= Math.ceil(wanted.length * 0.6)) return true;
+
+  // Some requested labels (for example "Entrance by invitation") consist
+  // entirely of generic words. In that case retain the generic overlap instead
+  // of leaving the request with no usable tokens.
+  const candidateRaw = new Set(rawTokens(candidate));
+  const genericWanted = rawTokens(product).filter(token => IGNORED_PRODUCT_WORDS.has(token));
+  return genericWanted.some(token => candidateRaw.has(token));
 }
 async function hasVisiblePlus(locator) {
   for (const selector of PLUS_SELECTORS) {
@@ -188,6 +203,9 @@ async function findProductContainer(page, productName) {
   detectedCandidates.sort((a, b) => b.score - a.score || a.textLength - b.textLength);
   logLine(`Found ${detectedCandidates.length} candidate product containers; ${candidates.length} matched (scanned ${count})`);
   if (!candidates.length) {
+    detectedCandidates.slice(0, 5).forEach((candidate, position) => {
+      logLine(`Product candidate ${position + 1}: score=${candidate.score} plus=${candidate.hasPlusButton} price=${candidate.hasPriceSignal} text=${candidate.text.slice(0, 300)}`);
+    });
     const error = new Error(`Product not found: ${productName}`);
     error.failureDetails = { detected_product_candidates: detectedCandidates.slice(0, 20) };
     throw error;
