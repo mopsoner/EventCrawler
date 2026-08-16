@@ -5,7 +5,7 @@
   <div>
     <div class="eyebrow">Scoring</div>
     <h1>Opportunités de prix</h1>
-    <p>Billets gratuits, variations successives de prix et variantes moins chères.</p>
+    <p>Billets gratuits, hausses observées et prochains paliers de prix comparables.</p>
   </div>
 </section>
 <section class="panel">
@@ -53,7 +53,7 @@
           <td><span class="badge badge-warning">{{ r.opportunity_type }}</span><div class="cell-sub">{{ r.opportunity_reason }}</div></td>
           <td>{% if r.reference_price is not none %}{{ '%.2f'|format(r.reference_price) }} €{% else %}—{% endif %}</td>
           <td>{{ r.price_text }}</td>
-          <td>{% if r.opportunity_type == 'PRICE_INCREASE' %}<span class="badge badge-danger">+{{ '%.2f'|format((r.current_price or 0) - (r.reference_price or 0)) }} €</span>{% elif r.saving_amount is not none %}<span class="badge badge-success">-{{ '%.2f'|format(r.saving_amount) }} €{% if r.saving_percent is not none %} ({{ '%.1f'|format(r.saving_percent) }} %){% endif %}</span>{% else %}—{% endif %}</td>
+          <td>{% if r.opportunity_type == 'PRICE_INCREASE' %}<span class="badge badge-danger">+{{ '%.2f'|format(r.increase_amount or 0) }} €</span>{% elif r.opportunity_type == 'PRICE_STEP_UP' %}<span class="badge badge-warning">prochain +{{ '%.2f'|format(r.increase_amount or 0) }} €{% if r.increase_percent is not none %} ({{ '%.1f'|format(r.increase_percent) }} %){% endif %}</span>{% else %}—{% endif %}</td>
           <td>
             {% if r.is_early_free_opportunity %}<span class="badge badge-success">Early free</span>{% endif %}
             {% if r.is_recent %}<span class="badge badge-warning">Recent</span>{% endif %}

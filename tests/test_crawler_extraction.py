@@ -205,7 +205,7 @@ class PriceOpportunityTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def test_available_cheaper_variant_is_detected_within_family(self):
+    def test_available_products_form_ascending_price_steps_within_family(self):
         crawler.upsert_event(self.event(15, "Single entry - PROMO", True))
         crawler.upsert_event({**self.event(20, "Single entry", True), "products": [
             self.event(15, "Single entry - PROMO", True)["products"][0],
@@ -214,8 +214,29 @@ class PriceOpportunityTests(unittest.TestCase):
         ]})
         connection = crawler.conn()
         try:
-            row = connection.execute("SELECT opportunity_type, current_price, reference_price FROM price_opportunities WHERE opportunity_type='CHEAPER_VARIANT' AND is_active=1").fetchone()
-            self.assertEqual(tuple(row), ("CHEAPER_VARIANT", 15, 20))
+            rows = connection.execute("SELECT opportunity_type, current_price, reference_price, increase_amount FROM price_opportunities WHERE opportunity_type='PRICE_STEP_UP' AND is_active=1 ORDER BY current_price").fetchall()
+            self.assertEqual([tuple(row) for row in rows], [
+                ("PRICE_STEP_UP", 15, 20, 5),
+                ("PRICE_STEP_UP", 20, 35, 15),
+            ])
+        finally:
+            connection.close()
+
+    def test_non_increase_does_not_create_an_opportunity(self):
+        event_id = crawler.upsert_event(self.event(20))
+        crawler.upsert_event(self.event(10))
+        connection = crawler.conn()
+        try:
+            history = connection.execute(
+                "SELECT old_price, new_price FROM product_history WHERE event_id=? AND change_type='PRICE_CHANGE'",
+                (event_id,),
+            ).fetchall()
+            self.assertEqual([tuple(row) for row in history], [(20, 10)])
+            active = connection.execute(
+                "SELECT COUNT(*) FROM price_opportunities WHERE event_id=? AND is_active=1",
+                (event_id,),
+            ).fetchone()[0]
+            self.assertEqual(active, 0)
         finally:
             connection.close()
 

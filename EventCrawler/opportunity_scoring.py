@@ -1,6 +1,5 @@
 import re
 import unicodedata
-from statistics import median
 
 
 VARIANT_WORDS = {
@@ -70,8 +69,8 @@ def ensure_opportunity_schema(cur):
             reference_product_id INTEGER NOT NULL DEFAULT 0,
             reference_price REAL,
             current_price REAL,
-            saving_amount REAL,
-            saving_percent REAL,
+            increase_amount REAL,
+            increase_percent REAL,
             score INTEGER DEFAULT 0,
             confidence TEXT DEFAULT 'high',
             reason TEXT,
@@ -84,48 +83,57 @@ def ensure_opportunity_schema(cur):
         CREATE INDEX IF NOT EXISTS idx_price_opportunities_active
         ON price_opportunities(is_active, event_id, score);
     ''')
+    columns = {row[1] for row in cur.execute("PRAGMA table_info(price_opportunities)").fetchall()}
+    if "increase_amount" not in columns:
+        cur.execute("ALTER TABLE price_opportunities ADD COLUMN increase_amount REAL")
+    if "increase_percent" not in columns:
+        cur.execute("ALTER TABLE price_opportunities ADD COLUMN increase_percent REAL")
+    cur.execute('''
+        DELETE FROM price_opportunities
+        WHERE opportunity_type NOT IN ('PRICE_INCREASE', 'PRICE_STEP_UP')
+    ''')
 
 
 def _upsert(cur, event_id, product_id, opportunity_type, reference_product_id,
-            reference_price, current_price, saving_amount, saving_percent,
+            reference_price, current_price, increase_amount, increase_percent,
             score, confidence, reason):
     cur.execute('''
         INSERT INTO price_opportunities(
             event_id, product_id, opportunity_type, reference_product_id,
-            reference_price, current_price, saving_amount, saving_percent,
+            reference_price, current_price, increase_amount, increase_percent,
             score, confidence, reason, is_active
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         ON CONFLICT(event_id, product_id, opportunity_type, reference_product_id)
         DO UPDATE SET reference_price=excluded.reference_price,
-            current_price=excluded.current_price, saving_amount=excluded.saving_amount,
-            saving_percent=excluded.saving_percent, score=excluded.score,
+            current_price=excluded.current_price, increase_amount=excluded.increase_amount,
+            increase_percent=excluded.increase_percent, score=excluded.score,
             confidence=excluded.confidence, reason=excluded.reason, is_active=1,
             last_detected_at=CURRENT_TIMESTAMP, resolved_at=NULL
     ''', (event_id, product_id, opportunity_type, reference_product_id,
-          reference_price, current_price, saving_amount, saving_percent,
+          reference_price, current_price, increase_amount, increase_percent,
           score, confidence, reason))
 
 
 def record_price_variation(cur, event_id, product_id, old_price, new_price):
-    """Persist every real transition (10→15→20 included), not only discounts."""
+    """Persist only upward transitions, for example 10→15 then 15→20."""
     if old_price is None or new_price is None or float(old_price) == float(new_price):
         return
     delta = float(new_price) - float(old_price)
-    pct = (abs(delta) / float(old_price) * 100) if old_price else None
-    kind = "PRICE_INCREASE" if delta > 0 else "PRICE_DROP"
-    score = min(100, int((pct or 0) + min(abs(delta), 30)))
-    reason = f"Prix passé de {old_price:g} € à {new_price:g} € ({delta:+g} €)"
-    # A transition is an observed signal and remains visible until superseded.
     cur.execute('''UPDATE price_opportunities SET is_active=0, resolved_at=CURRENT_TIMESTAMP
-                   WHERE event_id=? AND product_id=? AND opportunity_type IN ('PRICE_INCREASE','PRICE_DROP')''',
+                   WHERE event_id=? AND product_id=? AND opportunity_type='PRICE_INCREASE' ''',
                 (event_id, product_id))
-    _upsert(cur, event_id, product_id, kind, 0, old_price, new_price,
-            -delta, pct, score, "high", reason)
+    if delta <= 0:
+        return
+    pct = (delta / float(old_price) * 100) if old_price else None
+    score = min(100, int((pct or 0) + min(delta, 30)))
+    reason = f"Hausse observée de {old_price:g} € à {new_price:g} € (+{delta:g} €)"
+    _upsert(cur, event_id, product_id, "PRICE_INCREASE", 0, old_price, new_price,
+            delta, pct, score, "high", reason)
 
 
 def refresh_family_opportunities(cur, event_id):
     cur.execute("""UPDATE price_opportunities SET is_active=0, resolved_at=CURRENT_TIMESTAMP
-                   WHERE event_id=? AND opportunity_type='CHEAPER_VARIANT'""", (event_id,))
+                   WHERE event_id=? AND opportunity_type='PRICE_STEP_UP'""", (event_id,))
     rows = [dict(row) for row in cur.execute('''
         SELECT id, product_name, family_key, numeric_price, is_available, capacity
         FROM products WHERE event_id=? AND numeric_price IS NOT NULL AND numeric_price > 0
@@ -134,20 +142,27 @@ def refresh_family_opportunities(cur, event_id):
     for row in rows:
         families.setdefault((row.get("family_key"), row.get("capacity")), []).append(row)
     for family in families.values():
-        prices = sorted({float(row["numeric_price"]) for row in family})
+        by_price = {}
+        for row in family:
+            by_price.setdefault(float(row["numeric_price"]), []).append(row)
+        prices = sorted(by_price)
         if len(prices) < 2:
             continue
-        reference = median(prices)
-        for row in family:
-            current = float(row["numeric_price"])
-            if current >= reference or row.get("is_available") == 0:
+        # Adjacent values form an ascending price ladder inside one comparable
+        # family/capacity. Each available lower tier is an opportunity before
+        # the next observed tier (15→20, then 20→35, for example).
+        for current, next_price in zip(prices, prices[1:]):
+            increase = next_price - current
+            pct = increase / current * 100 if current else None
+            if increase < 1 or (pct is not None and pct < 5):
                 continue
-            saving = reference - current
-            pct = saving / reference * 100
-            if saving < 1 or pct < 5:
-                continue
-            ref = min((candidate for candidate in family if float(candidate["numeric_price"]) >= reference),
-                      key=lambda candidate: float(candidate["numeric_price"]))
-            _upsert(cur, event_id, row["id"], "CHEAPER_VARIANT", ref["id"], reference,
-                    current, saving, pct, min(100, int(pct + saving)), "medium",
-                    f"{saving:g} € moins cher que le tarif médian comparable ({reference:g} €)")
+            reference = by_price[next_price][0]
+            for row in by_price[current]:
+                if row.get("is_available") == 0:
+                    continue
+                _upsert(
+                    cur, event_id, row["id"], "PRICE_STEP_UP", reference["id"],
+                    next_price, current, increase, pct,
+                    min(100, int((pct or 0) + min(increase, 30))), "medium",
+                    f"Prochain palier comparable: {current:g} € → {next_price:g} € (+{increase:g} €)",
+                )

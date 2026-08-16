@@ -806,15 +806,15 @@ def list_opportunities(limit=None):
         r["is_early_free_opportunity"] = bool(r.get("is_free")) and r.get("is_available") in (1, True) and recent
         r["opportunity_type"] = "FREE"
         r["reference_price"] = None
-        r["saving_amount"] = None
-        r["saving_percent"] = None
+        r["increase_amount"] = None
+        r["increase_percent"] = None
         r["opportunity_reason"] = "Billet gratuit disponible" if r["is_early_free_opportunity"] else "Billet gratuit"
         r["opportunity_score"] = 100 if r["is_early_free_opportunity"] else 70
         rows.append(r)
     c = conn()
     changed = [dict(r) for r in c.execute('''
         SELECT po.opportunity_type, po.reference_price, po.current_price,
-               po.saving_amount, po.saving_percent, po.score AS opportunity_score,
+               po.increase_amount, po.increase_percent, po.score AS opportunity_score,
                po.confidence AS opportunity_confidence, po.reason AS opportunity_reason,
                po.first_detected_at, po.last_detected_at,
                p.*, e.name AS event_name, e.subtitle AS event_subtitle,
