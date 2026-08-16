@@ -32,6 +32,24 @@
     <form method="post" action="/crawl/stop"><button type="submit" class="btn btn-secondary">Stop current crawl</button></form>
   </div>
 </section>
+<section class="panel danger-zone">
+  <div class="panel-header">
+    <div>
+      <div class="eyebrow">Zone dangereuse</div>
+      <h2>Vider complètement la base</h2>
+      <p>Supprime définitivement tous les événements, produits, historiques, tickets, erreurs, règles et images locales générées. La configuration des régions est conservée.</p>
+    </div>
+  </div>
+  {% if database_cleared %}<div class="flash success">La base et les images locales ont été supprimées.</div>{% endif %}
+  <form method="post" action="/config/clear-database" onsubmit="return confirm('Cette action est irréversible. Vider toute la base et supprimer les images ?');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="field">
+      <span>Saisissez VIDER pour confirmer</span>
+      <input type="text" name="confirmation" required pattern="VIDER" autocomplete="off" placeholder="VIDER">
+    </label>
+    <div class="form-actions"><button type="submit" class="btn btn-danger">Vider la base et supprimer les images</button></div>
+  </form>
+</section>
 <section class="panel panel-form">
   {% if saved %}<div class="flash success">Configuration saved.</div>{% endif %}
   <form method="post">

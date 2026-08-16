@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import subprocess
 import threading
@@ -23,6 +24,7 @@ STATUS_PATH = Path("data/crawl_status.json")
 SCHEDULER_STATE_PATH = Path("data/scheduler_state.json")
 BOOKING_STATE_PATH = Path("data/booking_state.json")
 BOOKING_FAILURES_DIR = Path("data/booking_failures")
+GENERATED_IMAGE_DIRS = (Path("data/booking_screens"), BOOKING_FAILURES_DIR)
 BOOKING_SCRIPT_PATH = Path("booking_prepare.js")
 NOISE_ORGANIZER_HOSTS = {
     "bizouk.com",
@@ -278,6 +280,32 @@ def init_db():
     ensure_column(cur, "products", "early_bird_reason", "early_bird_reason TEXT")
     c.commit()
     c.close()
+
+
+def clear_database_and_images():
+    """Remove all application rows and locally generated booking images."""
+    c = conn()
+    try:
+        tables = [
+            row["name"]
+            for row in c.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+        ]
+        c.execute("PRAGMA defer_foreign_keys=ON")
+        for table in tables:
+            escaped_table = table.replace('"', '""')
+            c.execute(f'DELETE FROM "{escaped_table}"')
+        c.execute("DELETE FROM sqlite_sequence")
+        c.commit()
+    finally:
+        c.close()
+
+    for directory in GENERATED_IMAGE_DIRS:
+        shutil.rmtree(directory, ignore_errors=True)
+
+    with PENDING_BOOKINGS_LOCK:
+        PENDING_BOOKINGS.clear()
 
 
 def default_scheduler_state():
@@ -1164,7 +1192,18 @@ def config_page():
         return redirect(url_for("config_page", saved=1))
     saved = request.args.get("saved") == "1"
     scheduler_saved = request.args.get("scheduler_saved") == "1"
-    return render_template("config.html", config=load_config(), saved=saved, scheduler_saved=scheduler_saved, scheduler_state=read_scheduler_state(), crawl_status=read_crawl_status())
+    database_cleared = request.args.get("database_cleared") == "1"
+    return render_template("config.html", config=load_config(), saved=saved, scheduler_saved=scheduler_saved, database_cleared=database_cleared, scheduler_state=read_scheduler_state(), crawl_status=read_crawl_status())
+
+
+@app.route("/config/clear-database", methods=["POST"])
+def clear_database():
+    if request.form.get("confirmation") != "VIDER":
+        abort(400, description="Saisissez VIDER pour confirmer la suppression")
+    if crawl_is_running() or read_booking_state().get("running"):
+        abort(409, description="Arrêtez le crawler et la réservation avant de vider la base")
+    clear_database_and_images()
+    return internal_redirect("config_page", database_cleared=1)
 
 
 @app.route("/api/events")
