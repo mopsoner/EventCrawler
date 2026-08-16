@@ -105,6 +105,19 @@ class BizoukExtractionTests(unittest.TestCase):
         self.assertTrue(by_name["Entrée simple"]["is_available"])
         self.assertFalse(by_name["Prévente promo"]["is_available"])
 
+    def test_page_without_product_does_not_infer_one_from_unrelated_prices(self):
+        soup = BeautifulSoup("""
+          <main>
+            <h1>Soirée sur la plage</h1>
+            <section class="event-description">
+              <h2>Sur place</h2>
+              <p>Formule repas : 25 €</p>
+              <p>Parking gratuit à proximité.</p>
+            </section>
+          </main>
+        """, "html.parser")
+        self.assertEqual(extract_products_from_dom(soup, "bizouk"), [])
+
     def test_current_bizouk_header_description_and_contact_markup(self):
         soup = BeautifulSoup("""
           <section class="evh-hero">
