@@ -666,34 +666,11 @@ def extract_products_from_dom(soup, source="bizouk"):
         if product and product["product_key"] not in raw_seen:
             raw_seen.add(product["product_key"])
             products.append(product)
-    fallback_nodes = [] if source == "bizouk" and products else soup.find_all(["div", "section", "article", "li"])
-    for div in fallback_nodes:
-        text = normalize_text(div.get_text(" ", strip=True))
-        if not text or not re.search(r"(?:€|\beur\b|\beuros?\b|\bgratuit\b|\bfree\b)", text, re.I) or len(text) > 650:
-            continue
-        lines = [normalize_text(x) for x in div.get_text("\n", strip=True).splitlines() if normalize_text(x)]
-        if not lines or len(lines) > 12:
-            continue
-        price_lines = [x for x in lines if re.search(r"(?:€|\beur\b|\beuros?\b|\bgratuit\b|\bfree\b)", x, re.I) and parse_price(x) is not None and not is_non_product_name(x)]
-        if len(price_lines) != 1:
-            continue
-        price_line = price_lines[0]
-        price = parse_price(price_line)
-        price_idx = lines.index(price_line)
-        name = None
-        for line in reversed(lines[max(0, price_idx - 3):price_idx]):
-            if parse_price(line) is None and len(line) < 120 and not is_non_product_name(line):
-                name = line
-                break
-        if not name or name.lower() == price_line.lower():
-            continue
-        blob = " ".join(lines).lower()
-        is_available = availability_from_node(div, blob)
-        product_key = stable_product_key(source, name, price)
-        if product_key in raw_seen:
-            continue
-        raw_seen.add(product_key)
-        products.append({"source": source, "product_key": product_key, "product_name": name, "price_text": price_text_from_value(price, "EUR") or price_line, "numeric_price": price, "is_free": price == 0.0, "is_available": is_available})
+    # Never infer products from arbitrary price-looking content on the event
+    # page. Menus, transport, parking and promotional copy can all contain a
+    # price even when the event has no tickets. A DOM product must therefore
+    # live inside one of the source profile's explicit product selectors;
+    # structured Event offers are handled separately by the JSON-LD extractor.
     products = dedupe_products(products, source)
     products.sort(key=lambda p: (not p["is_free"], p["numeric_price"] if p["numeric_price"] is not None else 999999, -(product_name_score(p.get("product_name")))))
     return products
