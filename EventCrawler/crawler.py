@@ -13,6 +13,8 @@ from bs4 import BeautifulSoup
 from ai_automation import enrich_event_labels
 from config_store import load_config
 from source_profiles import SOURCE_PROFILES, detect_source, normalize_event_url, parse_event_ref
+from security import validate_external_url
+from storage import atomic_write_json
 
 DB_PATH = "data/eventcrawler.sqlite"
 BIZOUK_BASE_URL = "https://www.bizouk.com"
@@ -27,8 +29,7 @@ AI_ENRICH_ENABLED = os.getenv("AI_ENRICH_ENABLED", "1") != "0"
 
 
 def save_status(data):
-    STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATUS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(STATUS_PATH, data)
 
 
 def enabled_regions():
@@ -362,9 +363,18 @@ def score_event(name, region, products, contact, has_image, event_date):
 
 def fetch_html(url, session=None):
     client = session or requests
-    r = client.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-    r.raise_for_status()
-    return r.text
+    current = validate_external_url(url)
+    for _ in range(5):
+        response = client.get(current, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=False)
+        if response.is_redirect:
+            location = response.headers.get("Location")
+            if not location:
+                response.raise_for_status()
+            current = validate_external_url(urljoin(current, location))
+            continue
+        response.raise_for_status()
+        return response.text
+    raise requests.TooManyRedirects("trop de redirections")
 
 
 def extract_event_links(html, start_url=None):

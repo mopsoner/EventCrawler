@@ -1,7 +1,7 @@
 [project]
-name = "repl-nix-workspace"
+name = "eventcrawler"
 version = "0.1.0"
-description = "Add your description here"
+description = "Authenticated Bizouk/Kiwol event monitor"
 requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.14.3",

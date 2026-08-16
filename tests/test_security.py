@@ -1,0 +1,105 @@
+import base64
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+
+APP_DIR = Path(__file__).resolve().parents[1] / "EventCrawler"
+sys.path.insert(0, str(APP_DIR))
+
+from security import UnsafeURL, credentials_match, validate_external_url
+
+
+class URLValidationTests(unittest.TestCase):
+    def test_accepts_known_https_source(self):
+        self.assertEqual(
+            validate_external_url("https://www.bizouk.com/events/1#details", resolve_dns=False),
+            "https://www.bizouk.com/events/1",
+        )
+
+    def test_rejects_http_credentials_ports_and_unknown_hosts(self):
+        rejected = (
+            "http://www.bizouk.com/events/1",
+            "https://user:pass@www.bizouk.com/events/1",
+            "https://www.bizouk.com:444/events/1",
+            "https://127.0.0.1/",
+            "https://bizouk.com.example.org/",
+        )
+        for value in rejected:
+            with self.subTest(value=value), self.assertRaises(UnsafeURL):
+                validate_external_url(value, resolve_dns=False)
+
+    @patch("security.socket.getaddrinfo")
+    def test_rejects_private_dns_resolution(self, getaddrinfo):
+        getaddrinfo.return_value = [(2, 1, 6, "", ("127.0.0.1", 443))]
+        with self.assertRaises(UnsafeURL):
+            validate_external_url("https://www.bizouk.com/")
+
+    def test_credentials_use_exact_values(self):
+        self.assertTrue(credentials_match("admin", "secret", "admin", "secret"))
+        self.assertFalse(credentials_match("admin", "wrong", "admin", "secret"))
+
+
+class WebSecurityTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.previous_cwd = Path.cwd()
+        cls.tempdir = tempfile.TemporaryDirectory()
+        os.chdir(cls.tempdir.name)
+        import app as app_module
+
+        cls.module = app_module
+        cls.application = app_module.create_app(
+            {"TESTING": True, "ADMIN_USERNAME": "tester", "ADMIN_PASSWORD": "secret", "SECRET_KEY": "test-key"}
+        )
+        cls.client = cls.application.test_client()
+        cls.auth = "Basic " + base64.b64encode(b"tester:secret").decode()
+
+    @classmethod
+    def tearDownClass(cls):
+        os.chdir(cls.previous_cwd)
+        cls.tempdir.cleanup()
+
+    def test_authentication_is_required(self):
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 401)
+
+    def test_sensitive_api_is_not_cached_and_config_is_redacted(self):
+        response = self.client.get("/api/config", headers={"Authorization": self.auth})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual(response.json["booking_profile"], {"configured": True})
+
+    def test_post_requires_csrf(self):
+        response = self.client.post("/scheduler/start", headers={"Authorization": self.auth})
+        self.assertEqual(response.status_code, 403)
+
+    def test_booking_requires_explicit_single_use_approval(self):
+        self.client.get("/", headers={"Authorization": self.auth})
+        with self.client.session_transaction() as flask_session:
+            token = flask_session["csrf_token"]
+        headers = {"Authorization": self.auth, "X-CSRF-Token": token}
+        payload = {"event_url": "https://www.bizouk.com/events/details/test/1", "product_name": "Billet", "ticket_count": 99}
+        connection = self.module.conn()
+        connection.execute("INSERT OR IGNORE INTO events(event_url, name) VALUES (?, ?)", (payload["event_url"], "Test"))
+        event_id = connection.execute("SELECT id FROM events WHERE event_url=?", (payload["event_url"],)).fetchone()[0]
+        connection.execute("INSERT OR IGNORE INTO products(event_id, product_name, price_text, numeric_price, is_free, is_available) VALUES (?, ?, ?, ?, ?, ?)", (event_id, "Billet", "0 EUR", 0, 1, 1))
+        connection.commit()
+        connection.close()
+        with patch.object(self.module, "validate_external_url", return_value=payload["event_url"]):
+            prepared = self.client.post("/booking/prepare", json=payload, headers=headers)
+        self.assertEqual(prepared.status_code, 200)
+        self.assertEqual(prepared.json["status"], "approval_required")
+        self.assertEqual(prepared.json["summary"]["ticket_count"], 10)
+        with patch.object(self.module, "launch_booking_prepare", return_value=True):
+            confirmed = self.client.post("/booking/confirm", json={"approval_token": prepared.json["approval_token"]}, headers=headers)
+            replayed = self.client.post("/booking/confirm", json={"approval_token": prepared.json["approval_token"]}, headers=headers)
+        self.assertEqual(confirmed.json["status"], "started")
+        self.assertEqual(replayed.status_code, 400)
+
+
+if __name__ == "__main__":
+    unittest.main()

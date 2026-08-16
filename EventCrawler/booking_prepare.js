@@ -30,7 +30,7 @@ function defaultState() {
   return {
     running: false,
     status: 'idle',
-    mode: 'auto_confirm',
+    mode: 'human_approved',
     event_url: null,
     product_name: null,
     ticket_count: 0,
@@ -43,6 +43,13 @@ function defaultState() {
   };
 }
 
+function atomicWriteJson(filePath, value) {
+  ensureDir(path.dirname(filePath));
+  const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temporary, JSON.stringify(value, null, 2), { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(temporary, filePath);
+}
+
 function writeState(fields = {}) {
   ensureDir(DATA_DIR);
   let state = defaultState();
@@ -51,7 +58,7 @@ function writeState(fields = {}) {
       state = { ...state, ...JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')) };
     } catch {}
   }
-  fs.writeFileSync(STATE_PATH, JSON.stringify({ ...state, ...fields }, null, 2), 'utf8');
+  atomicWriteJson(STATE_PATH, { ...state, ...fields });
 }
 
 function detectSource(eventUrl) {
@@ -87,7 +94,7 @@ async function main() {
     writeState({
       running: true,
       status: 'routing',
-      mode: 'auto_confirm',
+      mode: 'human_approved',
       event_url: eventUrl,
       product_name: productName,
       ticket_count: Number(ticketCount) || 0,

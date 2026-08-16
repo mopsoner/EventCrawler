@@ -2,6 +2,9 @@ import json
 import re
 from pathlib import Path
 
+from security import UnsafeURL, validate_external_url
+from storage import atomic_write_json
+
 CONFIG_PATH = Path("data/config.json")
 
 DEFAULT_CONFIG = {
@@ -11,13 +14,13 @@ DEFAULT_CONFIG = {
     "free_product_refresh_frequency_hours": 24,
     "user_agent": "Mozilla/5.0",
     "booking_profile": {
-        "first_name": "Olivier",
-        "last_name": "Mops",
-        "full_name": "Olivier Mops",
-        "phone": "0691243236",
+        "first_name": "Prénom",
+        "last_name": "Nom",
+        "full_name": "Prénom Nom",
+        "phone": "0600000000",
         "gender": "Homme",
-        "email": "contact@sejourcarnaval.com",
-        "default_ticket_count": 2,
+        "email": "utilisateur@example.com",
+        "default_ticket_count": 1,
     },
     "regions": {
         "london": {"enabled": True, "url": "https://www.bizouk.com/?region=london"},
@@ -42,8 +45,9 @@ def _normalized_regions(regions_data: dict, fallback_to_defaults: bool) -> dict:
         name = slugify_region_name(raw_name)
         if not name:
             continue
-        url = str(region.get("url") or "").strip()
-        if not url:
+        try:
+            url = validate_external_url(region.get("url"), resolve_dns=False)
+        except UnsafeURL:
             continue
         clean_regions[name] = {
             "enabled": bool(region.get("enabled")),
@@ -58,15 +62,15 @@ def _normalized_booking_profile(data: dict) -> dict:
         for key in base.keys():
             if key in data:
                 base[key] = data[key]
-    base["first_name"] = str(base.get("first_name") or "Olivier").strip() or "Olivier"
-    base["last_name"] = str(base.get("last_name") or "Mops").strip() or "Mops"
+    base["first_name"] = str(base.get("first_name") or "Prénom").strip() or "Prénom"
+    base["last_name"] = str(base.get("last_name") or "Nom").strip() or "Nom"
     full_name = str(base.get("full_name") or "").strip()
     if not full_name:
         full_name = f"{base['first_name']} {base['last_name']}".strip()
     base["full_name"] = full_name
-    base["phone"] = str(base.get("phone") or "0691243236").strip() or "0691243236"
+    base["phone"] = str(base.get("phone") or "0600000000").strip() or "0600000000"
     base["gender"] = str(base.get("gender") or "Homme").strip() or "Homme"
-    base["email"] = str(base.get("email") or "contact@sejourcarnaval.com").strip() or "contact@sejourcarnaval.com"
+    base["email"] = str(base.get("email") or "utilisateur@example.com").strip() or "utilisateur@example.com"
     try:
         base["default_ticket_count"] = max(1, min(20, int(base.get("default_ticket_count", 2))))
     except Exception:
@@ -140,5 +144,5 @@ def save_config(data: dict) -> dict:
     merged["booking_profile"] = _normalized_booking_profile(merged.get("booking_profile"))
     merged["regions"] = _normalized_regions(merged.get("regions"), fallback_to_defaults=False)
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(CONFIG_PATH, merged)
     return merged

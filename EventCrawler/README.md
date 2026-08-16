@@ -14,6 +14,25 @@ curl -fsSL https://raw.githubusercontent.com/mopsoner/EventCrawler/main/install.
 cd ~/EventCrawler && chmod +x run.sh && ./run.sh
 ```
 
+Au premier lancement, un mot de passe administrateur aléatoire est créé dans
+`data/admin_password` (permissions `0600`). Connectez-vous avec l'utilisateur
+`admin` et ce mot de passe. Le serveur écoute uniquement sur `127.0.0.1`; utilisez
+un tunnel SSH ou un reverse proxy HTTPS authentifié pour un accès distant.
+
+Les variables `EVENTCRAWLER_ADMIN_USERNAME`, `EVENTCRAWLER_ADMIN_PASSWORD`,
+`EVENTCRAWLER_SECRET_KEY`, `EVENTCRAWLER_HOST` et `EVENTCRAWLER_HTTPS` permettent
+de fournir les paramètres depuis un gestionnaire de secrets. Ne publiez jamais
+directement le port Flask.
+
+Le planificateur est prévu comme processus séparé :
+
+```bash
+cd ~/EventCrawler
+.venv/bin/python scheduler.py
+```
+
+`install_startup_service.sh` installe les services web et planificateur séparément.
+
 ## Pages
 - `/`
 - `/events`
