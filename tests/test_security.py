@@ -1,4 +1,6 @@
 import base64
+import csv
+import io
 import os
 import sys
 import tempfile
@@ -85,6 +87,33 @@ class WebSecurityTests(unittest.TestCase):
         self.assertEqual(api_response.headers["Cache-Control"], "no-store")
         self.assertEqual(api_response.json["logs"]["crawl"][-1], "page failed")
         self.assertEqual(len(api_response.json["workers"]), 3)
+
+    def test_events_csv_export_is_downloadable_and_spreadsheet_safe(self):
+        connection = self.module.conn()
+        connection.execute(
+            "INSERT INTO events(event_url, name, description, city, score) VALUES (?, ?, ?, ?, ?)",
+            (
+                "https://www.bizouk.com/events/details/csv-export/1",
+                "Soirée, spéciale",
+                '=HYPERLINK("https://example.test")',
+                "Pointe-à-Pitre",
+                42,
+            ),
+        )
+        connection.commit()
+        connection.close()
+
+        response = self.client.get("/events/export.csv", headers={"Authorization": self.auth})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "text/csv")
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertIn("attachment; filename=", response.headers["Content-Disposition"])
+        rows = list(csv.DictReader(io.StringIO(response.get_data(as_text=True).lstrip("\ufeff"))))
+        exported = next(row for row in rows if row["Nom"] == "Soirée, spéciale")
+        self.assertEqual(exported["Ville"], "Pointe-à-Pitre")
+        self.assertEqual(exported["Score"], "42")
+        self.assertTrue(exported["Description"].startswith("'="))
 
     def test_database_reads_continue_during_crawler_write(self):
         writer = self.module.conn()

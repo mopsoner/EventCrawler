@@ -1,3 +1,5 @@
+import csv
+import io
 import json
 import logging
 import os
@@ -12,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-from flask import Flask, abort, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, abort, jsonify, redirect, render_template, request, session, url_for
 
 from ai_automation import enrich_event_labels, suggest_selector_repair
 from config_store import load_config, save_config, slugify_region_name
@@ -119,7 +121,7 @@ def secure_response(response):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "same-origin")
     response.headers.setdefault("Content-Security-Policy", "default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'")
-    if request.path.startswith("/api/") or request.path in {"/config", "/tickets", "/failures", "/logs"}:
+    if request.path.startswith("/api/") or request.path in {"/config", "/tickets", "/failures", "/logs", "/events/export.csv"}:
         response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -693,6 +695,47 @@ def list_events(limit=None, watchlist_only=False):
     return decorate_rows(rows)
 
 
+EVENT_CSV_COLUMNS = (
+    ("id", "ID"),
+    ("name", "Nom"),
+    ("subtitle", "Sous-titre"),
+    ("description", "Description"),
+    ("event_date", "Date de l'événement"),
+    ("region", "Région"),
+    ("city", "Ville"),
+    ("address", "Adresse"),
+    ("contact_phone", "Téléphone"),
+    ("contact_email", "E-mail"),
+    ("contact_website", "Site web"),
+    ("event_url", "URL source"),
+    ("event_image", "URL image"),
+    ("score", "Score"),
+    ("first_seen_at", "Détecté le"),
+    ("manual_status", "Statut manuel"),
+    ("private_note", "Note privée"),
+    ("is_watchlisted", "Dans la watchlist"),
+)
+
+
+def csv_cell(value):
+    """Keep untrusted crawler values from becoming spreadsheet formulas."""
+    if value is None:
+        return ""
+    text = str(value)
+    if text.startswith(("=", "+", "-", "@", "\t", "\r")):
+        return "'" + text
+    return text
+
+
+def events_csv(rows):
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow([label for _, label in EVENT_CSV_COLUMNS])
+    for row in rows:
+        writer.writerow([csv_cell(row.get(key)) for key, _ in EVENT_CSV_COLUMNS])
+    return "\ufeff" + output.getvalue()
+
+
 def list_free(limit=None):
     c = conn()
     select_cols = "p.*, e.name AS event_name, e.subtitle AS event_subtitle, e.description AS event_description, e.event_date AS event_date, e.region, e.event_url, e.first_seen_at AS event_first_seen, e.score, e.id AS event_id, e.manual_status AS manual_status, e.is_watchlisted AS is_watchlisted"
@@ -1044,6 +1087,16 @@ def scheduler_run_free_refresh():
 @app.route("/events")
 def events():
     return render_template("events.html", events=list_events())
+
+
+@app.route("/events/export.csv")
+def export_events_csv():
+    filename = f"eventcrawler-events-{utc_now():%Y-%m-%d}.csv"
+    return Response(
+        events_csv(list_events()),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.route("/watchlist")
