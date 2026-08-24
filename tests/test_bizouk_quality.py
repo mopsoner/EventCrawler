@@ -1,11 +1,8 @@
-import sys
 import unittest
 from unittest.mock import patch
 from pathlib import Path
 
 from bs4 import BeautifulSoup
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "EventCrawler"))
 
 from bizouk_quality import (
     EventValidationError,

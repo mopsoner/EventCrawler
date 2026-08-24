@@ -10,17 +10,14 @@ if [ ! -d ".venv" ]; then
 fi
 
 echo "Installing Python dependencies..."
-.venv/bin/pip install -q --no-user -r EventCrawler/requirements.txt
+.venv/bin/pip install -q --no-user -r requirements.txt
 
-# Install Node dependencies in EventCrawler/
+# Install Node dependencies
 echo "Installing Node dependencies..."
-cd EventCrawler
 npm install --no-fund --no-audit 2>&1
-cd ..
 
 # Install Playwright Chromium if needed
 echo "Verifying Playwright Chromium..."
-cd EventCrawler
 node -e "
 const { chromium } = require('playwright');
 chromium.executablePath().then(p => {
@@ -37,6 +34,5 @@ chromium.executablePath().then(p => {
     execSync('npx playwright install chromium', { stdio: 'inherit' });
 });
 " 2>/dev/null || npx playwright install chromium
-cd ..
 
 echo "=== Post-merge setup complete ==="
