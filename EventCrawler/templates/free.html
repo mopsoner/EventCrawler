@@ -58,7 +58,7 @@
             <button
               type="button"
               class="btn btn-secondary"
-              onclick="prepareBooking(this, '{{ r.event_url|e }}', '{{ r.product_name|replace("'", "\\'") }}', 2, 'contact@sejourcarnaval.com')">
+              onclick="prepareBooking(this, '{{ r.event_url|e }}', '{{ r.product_name|replace("'", "\\'") }}')">
               Préparer achat
             </button>
           </td>
@@ -137,7 +137,7 @@ initDataTable('free-table', {
   ]
 });
 
-async function prepareBooking(button, eventUrl, productName, ticketCount, email) {
+async function prepareBooking(button, eventUrl, productName) {
   const originalText = button.textContent;
   button.disabled = true;
   button.textContent = 'Lancement...';
@@ -147,9 +147,7 @@ async function prepareBooking(button, eventUrl, productName, ticketCount, email)
       headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content },
       body: JSON.stringify({
         event_url: eventUrl,
-        product_name: productName,
-        ticket_count: ticketCount,
-        email: email
+        product_name: productName
       })
     });
     const data = await res.json();

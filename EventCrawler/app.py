@@ -21,6 +21,7 @@ from config_store import load_config, save_config, slugify_region_name
 from security import UnsafeURL, credentials_match, validate_external_url
 from storage import atomic_write_json, atomic_write_text, connect_sqlite, interprocess_lock
 from opportunity_scoring import ensure_opportunity_schema
+from booking_jobs import MAX_BOOKING_ATTEMPTS, ensure_booking_jobs_schema, recover_interrupted_booking_jobs
 
 DB_PATH = "data/eventcrawler.sqlite"
 STATUS_PATH = Path("data/crawl_status.json")
@@ -44,6 +45,8 @@ CRAWL_PROCESS = None
 CRAWL_LOCK = threading.Lock()
 SCHEDULER_THREAD = None
 SCHEDULER_THREAD_LOCK = threading.Lock()
+BOOKING_JOB_THREAD = None
+BOOKING_JOB_THREAD_LOCK = threading.Lock()
 SCHEDULER_LOOP_SECONDS = 30
 BOOKING_PROCESS = None
 BOOKING_LOCK = threading.Lock()
@@ -88,6 +91,7 @@ def create_app(test_config=None, start_scheduler=False):
     init_db()
     if start_scheduler:
         ensure_scheduler_thread()
+        ensure_booking_job_thread()
     return app
 
 
@@ -264,6 +268,8 @@ def init_db():
         '''
     )
     ensure_opportunity_schema(cur)
+    ensure_booking_jobs_schema(cur)
+    recover_interrupted_booking_jobs(cur)
     ensure_column(cur, "events", "event_external_id", "event_external_id TEXT")
     ensure_column(cur, "events", "event_slug", "event_slug TEXT")
     ensure_column(cur, "events", "contact_website", "contact_website TEXT")
@@ -495,7 +501,7 @@ def selector_rules_env():
     return grouped
 
 
-def launch_booking_prepare(event_url: str, ticket_count: int, email: str, product_name: str):
+def launch_booking_prepare(event_url: str, ticket_count: int, email: str, product_name: str, mode="human_approved"):
     global BOOKING_PROCESS
     with BOOKING_LOCK:
         if BOOKING_PROCESS and BOOKING_PROCESS.poll() is None:
@@ -513,6 +519,8 @@ def launch_booking_prepare(event_url: str, ticket_count: int, email: str, produc
         env["BOOKING_PHONE"] = str(profile.get("phone") or "0600000000")
         env["BOOKING_GENDER"] = str(profile.get("gender") or "Homme")
         env["BOOKING_SELECTOR_RULES_JSON"] = json.dumps(selector_rules_env(), ensure_ascii=False)
+        env["BOOKING_MODE"] = mode
+        env["BOOKING_MAXIMUM_PRICE"] = "0"
         BOOKING_PROCESS = subprocess.Popen([
             "node", str(BOOKING_SCRIPT_PATH), "--event-url", event_url, "--ticket-count", str(ticket_count), "--email", email, "--product-name", product_name
         ], env=env, stdout=log_file, stderr=subprocess.STDOUT)
@@ -1026,6 +1034,88 @@ def ensure_scheduler_thread():
         SCHEDULER_THREAD.start()
 
 
+def claim_booking_job():
+    c = conn()
+    try:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("SELECT * FROM booking_jobs WHERE state='pending' AND attempt_count < ? ORDER BY created_at, id LIMIT 1", (MAX_BOOKING_ATTEMPTS,)).fetchone()
+        if not row:
+            c.commit()
+            return None
+        changed = c.execute("UPDATE booking_jobs SET state='running', claimed_at=CURRENT_TIMESTAMP WHERE id=? AND state='pending'", (row["id"],)).rowcount
+        c.commit()
+        return dict(row) if changed else None
+    finally:
+        c.close()
+
+
+def update_booking_job(job_id, state, error=None, increment_attempt=False):
+    c = conn()
+    try:
+        c.execute("""UPDATE booking_jobs SET state=?, last_error=?, attempt_count=attempt_count+?,
+                     claimed_at=CASE WHEN ?='pending' THEN NULL ELSE claimed_at END,
+                     finished_at=CASE WHEN ? IN ('confirmed','failed','skipped') THEN CURRENT_TIMESTAMP ELSE NULL END
+                     WHERE id=?""", (state, error, int(increment_attempt), state, state, job_id))
+        c.commit()
+    finally:
+        c.close()
+
+
+def process_booking_job_once(launcher=launch_booking_prepare):
+    profile = load_config().get("booking_profile", {})
+    if not profile.get("auto_book_new_free_products") or booking_is_running():
+        return False
+    job = claim_booking_job()
+    if not job:
+        return False
+    c = conn()
+    try:
+        product = c.execute("""SELECT p.numeric_price, p.is_free, p.is_available, p.product_name, e.event_url
+                               FROM products p JOIN events e ON e.id=p.event_id
+                               WHERE p.id=? AND p.event_id=? AND p.product_key=?""",
+                            (job["product_id"], job["event_id"], job["product_key"])).fetchone()
+    finally:
+        c.close()
+    if not product or product["numeric_price"] != 0 or product["is_free"] != 1 or product["is_available"] != 1:
+        update_booking_job(job["id"], "skipped", "product is no longer free and available")
+        return True
+    launch_args = (product["event_url"], int(profile.get("default_ticket_count", 2)),
+                   str(profile.get("email") or "").strip(), product["product_name"])
+    started = (launcher(*launch_args, mode="automatic")
+               if launcher is launch_booking_prepare else launcher(*launch_args))
+    if not started:
+        update_booking_job(job["id"], "pending", "booking launcher busy")
+        return False
+    if BOOKING_PROCESS is not None:
+        BOOKING_PROCESS.wait()
+    result = read_booking_state(raw=True)
+    if result.get("status") == "confirmed":
+        update_booking_job(job["id"], "confirmed", increment_attempt=True)
+    else:
+        attempts = job["attempt_count"] + 1
+        error = result.get("last_error") or f"booking exited with status {result.get('status', 'unknown')}"
+        update_booking_job(job["id"], "pending" if attempts < MAX_BOOKING_ATTEMPTS else "failed", error, True)
+    return True
+
+
+def booking_job_loop():
+    while True:
+        try:
+            process_booking_job_once()
+        except Exception:
+            LOGGER.exception("Échec du worker de réservation automatique")
+        time.sleep(2)
+
+
+def ensure_booking_job_thread():
+    global BOOKING_JOB_THREAD
+    with BOOKING_JOB_THREAD_LOCK:
+        if BOOKING_JOB_THREAD and BOOKING_JOB_THREAD.is_alive():
+            return
+        BOOKING_JOB_THREAD = threading.Thread(target=booking_job_loop, daemon=True, name="eventcrawler-booking-jobs")
+        BOOKING_JOB_THREAD.start()
+
+
 @app.route("/")
 def dashboard():
     cfg = load_config()
@@ -1060,11 +1150,11 @@ def booking_prepare():
     except UnsafeURL as exc:
         return jsonify({"status": "error", "message": str(exc)}), 400
     product_name = (data.get("product_name") or "").strip()
-    email = (data.get("email") or profile.get("email") or "utilisateur@example.com").strip()
+    email = (data.get("email") or profile.get("email") or "contact@sejourcarnaval.com").strip()
     try:
-        ticket_count = max(1, min(10, int(data.get("ticket_count", profile.get("default_ticket_count", 1)))))
+        ticket_count = max(1, min(10, int(data.get("ticket_count", profile.get("default_ticket_count", 2)))))
     except (TypeError, ValueError):
-        ticket_count = 1
+        ticket_count = 2
     if not event_url or not product_name:
         return jsonify({"status": "error", "message": "missing event_url or product_name"}), 400
     c = conn()
@@ -1273,8 +1363,9 @@ def config_page():
                 "full_name": request.form.get("booking_full_name", current.get("booking_profile", {}).get("full_name", "Prénom Nom")),
                 "phone": request.form.get("booking_phone", current.get("booking_profile", {}).get("phone", "0600000000")),
                 "gender": request.form.get("booking_gender", current.get("booking_profile", {}).get("gender", "Homme")),
-                "email": request.form.get("booking_email", current.get("booking_profile", {}).get("email", "utilisateur@example.com")),
+                "email": request.form.get("booking_email", current.get("booking_profile", {}).get("email", "contact@sejourcarnaval.com")),
                 "default_ticket_count": request.form.get("booking_default_ticket_count", current.get("booking_profile", {}).get("default_ticket_count", 2)),
+                "auto_book_new_free_products": request.form.get("booking_auto_book_new_free_products") == "on",
             },
             "regions": regions,
         }
