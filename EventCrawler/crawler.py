@@ -30,6 +30,7 @@ from bizouk_quality import (
     page_rejection_reason,
     validate_bizouk_event,
 )
+from booking_jobs import ensure_booking_jobs_schema
 
 DB_PATH = "data/eventcrawler.sqlite"
 BIZOUK_BASE_URL = "https://www.bizouk.com"
@@ -166,6 +167,7 @@ def init_db():
         '''
     )
     ensure_opportunity_schema(cur)
+    ensure_booking_jobs_schema(cur)
     for col, ddl in [
         ("event_external_id", "event_external_id TEXT"),
         ("event_slug", "event_slug TEXT"),
@@ -966,7 +968,14 @@ def upsert_event(event):
         else:
             try:
                 cur.execute("INSERT INTO products(event_id, source, product_key, product_name, price_text, numeric_price, is_free, is_available, family_key, capacity, product_kind, unit_price, is_early_bird, early_bird_score, early_bird_confidence, early_bird_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (event_id, source, product_key, product_name, price_text, numeric_price, is_free, avail, classification["family_key"], classification["capacity"], classification["kind"], unit_price, classification["is_early_bird"], classification["early_bird_score"], classification["early_bird_confidence"], classification["early_bird_reason"]))
+                product_id = cur.lastrowid
                 record_product_change(cur, event_id, product_name, "NEW_PRODUCT", None, numeric_price, None, is_free, None, avail)
+                if (CONFIG.get("booking_profile", {}).get("auto_book_new_free_products")
+                        and numeric_price == 0 and is_free == 1 and avail == 1):
+                    cur.execute("""INSERT OR IGNORE INTO booking_jobs
+                                   (event_id, product_id, product_key, product_name)
+                                   VALUES (?, ?, ?, ?)""",
+                                (event_id, product_id, product_key, product_name))
             except sqlite3.IntegrityError:
                 cur.execute("UPDATE products SET source=?, product_key=?, numeric_price=?, is_free=?, is_available=?, last_seen_at=CURRENT_TIMESTAMP WHERE event_id=? AND product_name=? AND price_text=?", (source, product_key, numeric_price, is_free, avail, event_id, product_name, price_text))
         if avail == 0:

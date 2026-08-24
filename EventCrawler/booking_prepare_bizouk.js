@@ -35,7 +35,7 @@ function defaultState() {
   return {
     running: false,
     status: 'idle',
-    mode: 'human_approved',
+    mode: process.env.BOOKING_MODE || 'human_approved',
     event_url: null,
     product_name: null,
     ticket_count: 0,
@@ -453,7 +453,7 @@ async function runPrepare(eventUrl, ticketCount, email, productName) {
   let lastStepName = 'start';
   let lastIntent = 'start';
   let lastSelectors = [];
-  writeState({ running: true, status: 'running', mode: 'human_approved', event_url: eventUrl, product_name: productName, ticket_count: ticketCount, email, started_at: startedAt, finished_at: null, last_error: null, confirmation_text: null });
+  writeState({ running: true, status: 'running', mode: process.env.BOOKING_MODE || 'human_approved', event_url: eventUrl, product_name: productName, ticket_count: ticketCount, email, started_at: startedAt, finished_at: null, last_error: null, confirmation_text: null });
   logLine(`Starting human-approved flow: ${eventUrl} / ${productName} / qty=${ticketCount} / email=${email}`);
   const { browser, page } = await newBrowserPage(chromium, { headless: DEFAULT_HEADLESS, slowMo: DEFAULT_SLOWMO });
   const prefix = slugify(productName);

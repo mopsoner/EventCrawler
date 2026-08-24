@@ -19,8 +19,9 @@ DEFAULT_CONFIG = {
         "full_name": "Prénom Nom",
         "phone": "0600000000",
         "gender": "Homme",
-        "email": "utilisateur@example.com",
-        "default_ticket_count": 1,
+        "email": "contact@sejourcarnaval.com",
+        "default_ticket_count": 2,
+        "auto_book_new_free_products": True,
     },
     "regions": {
         "london": {"enabled": True, "url": "https://www.bizouk.com/?region=london"},
@@ -70,11 +71,12 @@ def _normalized_booking_profile(data: dict) -> dict:
     base["full_name"] = full_name
     base["phone"] = str(base.get("phone") or "0600000000").strip() or "0600000000"
     base["gender"] = str(base.get("gender") or "Homme").strip() or "Homme"
-    base["email"] = str(base.get("email") or "utilisateur@example.com").strip() or "utilisateur@example.com"
+    base["email"] = str(base.get("email") or "contact@sejourcarnaval.com").strip() or "contact@sejourcarnaval.com"
     try:
         base["default_ticket_count"] = max(1, min(20, int(base.get("default_ticket_count", 2))))
     except Exception:
         base["default_ticket_count"] = 2
+    base["auto_book_new_free_products"] = bool(base.get("auto_book_new_free_products", True))
     return base
 
 

@@ -30,7 +30,7 @@ function defaultState() {
   return {
     running: false,
     status: 'idle',
-    mode: 'human_approved',
+    mode: process.env.BOOKING_MODE || 'human_approved',
     event_url: null,
     product_name: null,
     ticket_count: 0,
@@ -94,7 +94,7 @@ async function main() {
     writeState({
       running: true,
       status: 'routing',
-      mode: 'human_approved',
+      mode: process.env.BOOKING_MODE || 'human_approved',
       event_url: eventUrl,
       product_name: productName,
       ticket_count: Number(ticketCount) || 0,
