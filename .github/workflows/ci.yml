@@ -20,15 +20,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: python -m pip install .
-      - run: python -m compileall -q EventCrawler main.py tests
+      - run: python -m compileall -q *.py tests
       - run: python -m unittest discover -s tests -v
       - run: python -m pip check
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: EventCrawler/package-lock.json
+          cache-dependency-path: package-lock.json
       - run: npm ci --ignore-scripts
-        working-directory: EventCrawler
       - run: npm audit --omit=dev
-        working-directory: EventCrawler

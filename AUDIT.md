@@ -91,7 +91,7 @@ L'application remplit son objectif fonctionnel, mais son modèle de sécurité c
 
 ### AUD-09 — Absence de suite de tests et point d'entrée racine trompeur (faible)
 
-**Preuves.** Aucun fichier de test n'est présent. Le `main.py` racine affiche seulement un message tandis que l'application réelle se lance depuis `EventCrawler/app.py`. L'import de l'application initialise la base et démarre un thread, ce qui complique les tests isolés.
+**État initial.** Aucun fichier de test n'était présent et le point d'entrée racine n'exécutait pas directement l'application. Ces deux lacunes ont depuis été corrigées; l'import de l'application conserve toutefois des effets de bord qui compliquent les tests isolés.
 
 **Impact.** Les parseurs de pages, migrations SQLite, routes sensibles et transitions du planificateur peuvent régresser sans détection. Les plateformes utilisant `main.py` ne lancent pas le produit attendu.
 

@@ -57,7 +57,6 @@ The crawler uses those profiles to normalize event URLs, deduplicate events by s
 Use Playwright to inspect current Bizouk/Kiwol pages and save the selectors, headings, event links, body excerpt, and JSON-LD blocks found on each page:
 
 ```bash
-cd EventCrawler
 npm run analyze:pages -- --url "https://www.kiwol.com/" --url "https://www.bizouk.com/?region=paris" --out data/page_analysis.json
 ```
 
@@ -86,7 +85,6 @@ country code; other French local numbers use `+33`. Existing international
 `+590` and `+33` numbers are kept in E.164 form.
 
 ```bash
-cd EventCrawler
 npm run book:bizouk -- --event-url "https://www.bizouk.com/events/details/<slug>/<id>" --ticket-count 1 --email "client@example.com" --product-name "Nom du billet"
 npm run book:kiwol -- --event-url "https://www.kiwol.com/billetterie/<id>" --ticket-count 1 --email "client@example.com" --product-name "Nom du billet"
 ```

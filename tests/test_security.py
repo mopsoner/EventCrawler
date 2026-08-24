@@ -2,16 +2,12 @@ import base64
 import csv
 import io
 import os
-import sys
 import tempfile
 import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
-APP_DIR = Path(__file__).resolve().parents[1] / "EventCrawler"
-sys.path.insert(0, str(APP_DIR))
 
 from security import UnsafeURL, credentials_match, validate_external_url
 
