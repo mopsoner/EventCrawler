@@ -91,7 +91,6 @@ def create_app(test_config=None, start_scheduler=False):
     init_db()
     if start_scheduler:
         ensure_scheduler_thread()
-        ensure_booking_job_thread()
     return app
 
 
