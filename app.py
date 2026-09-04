@@ -773,7 +773,9 @@ def list_free(limit=None):
 
 def list_tickets(limit=None):
     c = conn()
-    sql = "SELECT * FROM tickets ORDER BY booked_at DESC, id DESC"
+    sql = """SELECT t.*, e.event_image AS event_image
+             FROM tickets t LEFT JOIN events e ON e.id = t.event_id
+             ORDER BY t.booked_at DESC, t.id DESC"""
     if limit:
         sql += f" LIMIT {int(limit)}"
     rows = [dict(r) for r in c.execute(sql).fetchall()]
@@ -836,6 +838,7 @@ def list_opportunities(limit=None):
                po.first_detected_at, po.last_detected_at,
                p.*, e.name AS event_name, e.subtitle AS event_subtitle,
                e.description AS event_description, e.event_date, e.region, e.event_url,
+               e.event_image AS event_image,
                e.first_seen_at AS event_first_seen, e.score, e.id AS event_id,
                e.manual_status, e.is_watchlisted
         FROM price_opportunities po
@@ -855,7 +858,10 @@ def list_opportunities(limit=None):
 
 def list_activity(limit=100):
     c = conn()
-    sql = '''SELECT ph.*, e.name AS event_name, e.region, e.event_url, e.id AS event_id FROM product_history ph LEFT JOIN events e ON e.id = ph.event_id ORDER BY ph.observed_at DESC LIMIT ?'''
+    sql = '''SELECT ph.*, e.name AS event_name, e.region, e.event_url,
+                    e.event_image AS event_image, e.id AS event_id
+             FROM product_history ph LEFT JOIN events e ON e.id = ph.event_id
+             ORDER BY ph.observed_at DESC LIMIT ?'''
     rows = [dict(r) for r in c.execute(sql, (limit,)).fetchall()]
     c.close()
     for row in rows:
