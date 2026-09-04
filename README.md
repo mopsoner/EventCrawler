@@ -16,6 +16,10 @@ curl -fsSL https://raw.githubusercontent.com/mopsoner/EventCrawler/main/install.
 cd ~/EventCrawler && chmod +x run.sh && ./run.sh
 ```
 
+`./run.sh` lance ensemble le serveur web, le planificateur et le consommateur
+de la file persistante `booking_jobs`. L'arrêt du script arrête également le
+planificateur afin de ne pas laisser de processus orphelin.
+
 Au premier lancement, un mot de passe administrateur aléatoire est créé dans
 `data/admin_password` (permissions `0600`). Connectez-vous avec l'utilisateur
 `admin` et ce mot de passe. Par défaut, le serveur écoute uniquement sur
@@ -27,7 +31,8 @@ Les variables `EVENTCRAWLER_ADMIN_USERNAME`, `EVENTCRAWLER_ADMIN_PASSWORD`,
 de fournir les paramètres depuis un gestionnaire de secrets. Ne publiez jamais
 directement le port Flask.
 
-Le planificateur est prévu comme processus séparé. Il exécute les parcours
+Pour une installation de production, le serveur web et le planificateur restent
+disponibles comme services systemd séparés. Le planificateur exécute les parcours
 planifiés et traite également la file persistante `booking_jobs` :
 
 ```bash
