@@ -20,15 +20,15 @@
       <nav class="nav-list">
         <a href="/" class="nav-link">Dashboard</a>
         <a href="/events" class="nav-link">Events</a>
-        <a href="/watchlist" class="nav-link">Watchlist</a>
         <a href="/free" class="nav-link">Free products</a>
-        <a href="/tickets" class="nav-link">Tickets</a>
-        <a href="/logs" class="nav-link">Logs</a>
-        <a href="/failures" class="nav-link">Failures</a>
         <a href="/opportunities" class="nav-link">Opportunities</a>
-        <a href="/activity" class="nav-link">Activity</a>
+        <a href="/tickets" class="nav-link">Tickets</a>
+        <a href="/watchlist" class="nav-link">Watchlist</a>
         <a href="/organizers" class="nav-link">Organizers</a>
+        <a href="/activity" class="nav-link">Activity</a>
+        <a href="/failures" class="nav-link">Failures</a>
         <a href="/config" class="nav-link">Config</a>
+        <a href="/logs" class="nav-link">Logs</a>
       </nav>
       <div class="sidebar-card">
         <div class="sidebar-card-label">V2</div>
@@ -40,6 +40,10 @@
       {% block content %}{% endblock %}
     </main>
   </div>
+  <dialog class="flyer-lightbox" id="flyer-lightbox" aria-label="Flyer agrandi">
+    <button class="flyer-lightbox-close" type="button" aria-label="Fermer">×</button>
+    <img src="" alt="">
+  </dialog>
   <script>
     document.querySelectorAll('form[method="post" i]').forEach((form) => {
       if (form.querySelector('input[name="csrf_token"]')) return;
@@ -47,6 +51,19 @@
       input.type = 'hidden'; input.name = 'csrf_token';
       input.value = document.querySelector('meta[name="csrf-token"]').content;
       form.appendChild(input);
+    });
+    const flyerLightbox = document.getElementById('flyer-lightbox');
+    document.addEventListener('click', (event) => {
+      const trigger = event.target.closest('[data-flyer-src]');
+      if (!trigger) return;
+      const image = flyerLightbox.querySelector('img');
+      image.src = trigger.dataset.flyerSrc;
+      image.alt = trigger.dataset.flyerAlt || 'Flyer agrandi';
+      flyerLightbox.showModal();
+    });
+    flyerLightbox.querySelector('.flyer-lightbox-close').addEventListener('click', () => flyerLightbox.close());
+    flyerLightbox.addEventListener('click', (event) => {
+      if (event.target === flyerLightbox) flyerLightbox.close();
     });
   </script>
   {% block extra_scripts %}{% endblock %}

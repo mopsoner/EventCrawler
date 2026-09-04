@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% from '_event_flyer.html' import event_flyer %}
 {% block title %}Dashboard · EventCrawler V2{% endblock %}
 {% block content %}
 <section class="hero">
@@ -31,11 +32,11 @@
 </section>
 <section class="panel">
   <div class="panel-header"><div><h2>Watchlist</h2><p>Événements épinglés manuellement.</p></div><a href="/watchlist" class="text-link">Voir tout</a></div>
-  <div class="table-wrap"><table class="table"><thead><tr><th>Event</th><th>Date</th><th>Ajouté</th><th>Status</th><th>Score</th></tr></thead><tbody>{% for e in watchlist_events %}<tr><td><a href="/event/{{ e.id }}">{{ e.name }}</a></td><td>{{ e.event_date or '—' }}</td><td>{{ e.added_ago }}</td><td>{{ e.manual_status or '—' }}</td><td><span class="badge badge-info">{{ e.score }}</span></td></tr>{% endfor %}</tbody></table></div>
+  <div class="table-wrap"><table class="table"><thead><tr><th>Event</th><th>Date</th><th>Ajouté</th><th>Status</th><th>Score</th></tr></thead><tbody>{% for e in watchlist_events %}<tr><td><div class="event-cell">{{ event_flyer(e.event_image, e.name) }}<a href="/event/{{ e.id }}">{{ e.name }}</a></div></td><td>{{ e.event_date or '—' }}</td><td>{{ e.added_ago }}</td><td>{{ e.manual_status or '—' }}</td><td><span class="badge badge-info">{{ e.score }}</span></td></tr>{% endfor %}</tbody></table></div>
 </section>
 <section class="panel">
   <div class="panel-header"><div><h2>Recent product activity</h2><p>Derniers changements détectés sur les produits.</p></div><a href="/activity" class="text-link">Voir tout</a></div>
-  <div class="table-wrap"><table class="table"><thead><tr><th>Event</th><th>Product</th><th>Change</th><th>When</th></tr></thead><tbody>{% for r in recent_activity %}<tr><td><a href="/event/{{ r.event_id }}">{{ r.event_name or '—' }}</a></td><td>{{ r.product_name }}</td><td>{{ r.change_type }}</td><td>{{ r.observed_ago }}</td></tr>{% endfor %}</tbody></table></div>
+  <div class="table-wrap"><table class="table"><thead><tr><th>Event</th><th>Product</th><th>Change</th><th>When</th></tr></thead><tbody>{% for r in recent_activity %}<tr><td><div class="event-cell">{{ event_flyer(r.event_image, r.event_name) }}<a href="/event/{{ r.event_id }}">{{ r.event_name or '—' }}</a></div></td><td>{{ r.product_name }}</td><td>{{ r.change_type }}</td><td>{{ r.observed_ago }}</td></tr>{% endfor %}</tbody></table></div>
 </section>
 <section class="panel">
   <div class="panel-header"><div><h2>Recent crawl runs</h2><p>Exécutions récentes et leur résultat.</p></div><a href="/activity" class="text-link">Voir les runs</a></div>

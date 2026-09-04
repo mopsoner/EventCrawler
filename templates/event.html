@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% from '_event_flyer.html' import event_flyer %}
 {% block title %}Event detail · EventCrawler V2{% endblock %}
 {% block content %}
 {% if event %}
@@ -23,7 +24,7 @@
       <a class="btn btn-secondary" target="_blank" href="https://calendar.google.com/calendar/render?action=TEMPLATE&text={{ (event.name or 'Event')|urlencode }}&details={{ (((event.description or event.subtitle) or '') ~ ' ' ~ (event.event_url or ''))|urlencode }}&location={{ ((event.address or '') ~ ' ' ~ (event.city or ''))|urlencode }}">Google Calendar</a>
     </div>
   </section>
-  <aside class="panel image-panel">{% if event.event_image %}<img src="{{ event.event_image }}" alt="{{ event.name }}">{% else %}<div class="media-fallback big">No image</div>{% endif %}</aside>
+  <aside class="panel image-panel">{{ event_flyer(event.event_image, event.name, 'large') }}</aside>
 </div>
 <section class="panel">
   <div class="panel-header"><div><h2>Description</h2><p>Description détectée depuis la page événement.</p></div></div>
