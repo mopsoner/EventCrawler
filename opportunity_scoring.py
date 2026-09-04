@@ -45,8 +45,16 @@ def classify_product(product_name):
     if kind == "group":
         group_words = [word for word in words if word in {"beach", "deck", "sunset", "sunday", "vip", "lounge", "table"}]
         family_key = "group:" + ("_".join(group_words) or "generic")
-    early_markers = {"early", "bird", "presale", "prevente", "promo", "phase", "tier"}
-    matched_markers = sorted(early_markers.intersection(words))
+    early_bird_patterns = {
+        "early bird": ("early", "bird"),
+        "prévente": ("prevente",),
+        "préventes": ("preventes",),
+        "presale": ("presale",),
+    }
+    matched_markers = [
+        label for label, marker_words in early_bird_patterns.items()
+        if all(word in words for word in marker_words)
+    ]
     is_early_bird = bool(matched_markers)
     return {
         "family_key": family_key,
@@ -90,7 +98,7 @@ def ensure_opportunity_schema(cur):
         cur.execute("ALTER TABLE price_opportunities ADD COLUMN increase_percent REAL")
     cur.execute('''
         DELETE FROM price_opportunities
-        WHERE opportunity_type NOT IN ('PRICE_INCREASE', 'PRICE_STEP_UP')
+        WHERE opportunity_type NOT IN ('PRICE_INCREASE', 'PRICE_STEP_UP', 'EARLY_BIRD')
     ''')
 
 
@@ -129,6 +137,26 @@ def record_price_variation(cur, event_id, product_id, old_price, new_price):
     reason = f"Hausse observée de {old_price:g} € à {new_price:g} € (+{delta:g} €)"
     _upsert(cur, event_id, product_id, "PRICE_INCREASE", 0, old_price, new_price,
             delta, pct, score, "high", reason)
+
+
+def refresh_early_bird_opportunities(cur, event_id):
+    """Expose currently available early-bird products as price opportunities."""
+    cur.execute("""UPDATE price_opportunities SET is_active=0, resolved_at=CURRENT_TIMESTAMP
+                   WHERE event_id=? AND opportunity_type='EARLY_BIRD'""", (event_id,))
+    rows = cur.execute('''
+        SELECT id, numeric_price, early_bird_score, early_bird_confidence,
+               early_bird_reason
+        FROM products
+        WHERE event_id=? AND is_early_bird=1 AND is_available=1
+    ''', (event_id,)).fetchall()
+    for row in rows:
+        _upsert(
+            cur, event_id, row["id"], "EARLY_BIRD", 0,
+            None, row["numeric_price"], None, None,
+            row["early_bird_score"] or 80,
+            row["early_bird_confidence"] or "high",
+            row["early_bird_reason"] or "Tarif early bird disponible",
+        )
 
 
 def refresh_family_opportunities(cur, event_id):

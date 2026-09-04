@@ -18,6 +18,7 @@ from security import validate_external_url
 from storage import atomic_write_json, connect_sqlite
 from opportunity_scoring import (classify_product, ensure_opportunity_schema,
                                  product_identity_key, record_price_variation,
+                                 refresh_early_bird_opportunities,
                                  refresh_family_opportunities)
 from bizouk_quality import (
     EventValidationError,
@@ -1033,6 +1034,7 @@ def upsert_event(event):
                        WHERE event_id=? AND product_id=? AND is_active=1""",
                     (event_id, current["id"]),
                 )
+    refresh_early_bird_opportunities(cur, event_id)
     refresh_family_opportunities(cur, event_id)
     c.commit()
     c.close()
