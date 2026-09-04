@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% from '_event_flyer.html' import event_flyer %}
 {% block title %}Tickets · EventCrawler{% endblock %}
 {% block content %}
 <section class="page-head">
@@ -44,8 +45,9 @@
         {% for r in rows %}
         <tr data-event="{{ (r.event_name or r.event_url)|lower }}" data-date="{{ r.event_date or '' }}" data-booked="{{ r.booked_at or '' }}" data-region="{{ r.region or '' }}" data-product="{{ (r.product_name or '')|lower }}" data-qty="{{ r.ticket_count or 0 }}" data-status="{{ r.status or '' }}" data-period="unknown">
           <td>
-            {% if r.event_id %}<a href="/event/{{ r.event_id }}">{{ r.event_name or r.event_url }}</a>{% else %}{{ r.event_name or r.event_url }}{% endif %}
+            <div class="event-cell">{{ event_flyer(r.event_image, r.event_name) }}<div>{% if r.event_id %}<a href="/event/{{ r.event_id }}">{{ r.event_name or r.event_url }}</a>{% else %}{{ r.event_name or r.event_url }}{% endif %}
             <div class="cell-sub"><span class="badge js-period-badge" style="display:none"></span></div>
+            </div></div>
           </td>
           <td>{{ r.event_date or '—' }}</td>
           <td><span class="badge">{{ r.added_ago }}</span></td>

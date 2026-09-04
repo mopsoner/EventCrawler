@@ -1,0 +1,9 @@
+{% macro event_flyer(image_url, event_name, size='small') -%}
+  {% if image_url %}
+  <button class="flyer-trigger flyer-trigger-{{ size }}" type="button" data-flyer-src="{{ image_url }}" data-flyer-alt="Flyer — {{ event_name or 'événement' }}" aria-label="Agrandir le flyer de {{ event_name or 'l’événement' }}">
+    <img src="{{ image_url }}" alt="Flyer — {{ event_name or 'événement' }}" loading="lazy">
+  </button>
+  {% else %}
+  <div class="flyer-placeholder flyer-placeholder-{{ size }}" aria-label="Flyer indisponible">—</div>
+  {% endif %}
+{%- endmacro %}
