@@ -27,7 +27,8 @@ Les variables `EVENTCRAWLER_ADMIN_USERNAME`, `EVENTCRAWLER_ADMIN_PASSWORD`,
 de fournir les paramètres depuis un gestionnaire de secrets. Ne publiez jamais
 directement le port Flask.
 
-Le planificateur est prévu comme processus séparé :
+Le planificateur est prévu comme processus séparé. Il exécute les parcours
+planifiés et traite également la file persistante `booking_jobs` :
 
 ```bash
 cd ~/EventCrawler
@@ -35,6 +36,9 @@ cd ~/EventCrawler
 ```
 
 `install_startup_service.sh` installe les services web et planificateur séparément.
+Le worker de réservation démarre uniquement dans le processus planificateur ;
+les éventuels workers multiples du serveur web ne consomment donc pas cette file
+en parallèle.
 
 ## Pages
 - `/`
