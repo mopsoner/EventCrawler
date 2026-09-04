@@ -266,6 +266,34 @@ class PriceOpportunityTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_available_early_bird_product_creates_an_opportunity(self):
+        event_id = crawler.upsert_event(self.event(12, "Entrée Early Bird", True))
+        connection = crawler.conn()
+        try:
+            opportunity = connection.execute(
+                """SELECT opportunity_type, current_price, score, confidence, is_active
+                   FROM price_opportunities WHERE event_id=? AND opportunity_type='EARLY_BIRD'""",
+                (event_id,),
+            ).fetchone()
+            self.assertEqual(tuple(opportunity), ("EARLY_BIRD", 12, 80, "high", 1))
+        finally:
+            connection.close()
+
+        crawler.upsert_event(self.event(12, "Entrée Early Bird", False))
+        connection = crawler.conn()
+        try:
+            self.assertEqual(connection.execute(
+                "SELECT is_active FROM price_opportunities WHERE event_id=? AND opportunity_type='EARLY_BIRD'",
+                (event_id,),
+            ).fetchone()[0], 0)
+        finally:
+            connection.close()
+
+    def test_early_bird_detection_requires_the_expression(self):
+        self.assertTrue(classify_product("Pass Early Bird")["is_early_bird"])
+        self.assertTrue(classify_product("Billet prévente")["is_early_bird"])
+        self.assertFalse(classify_product("Bird ticket standard")["is_early_bird"])
+
     def test_non_increase_does_not_create_an_opportunity(self):
         event_id = crawler.upsert_event(self.event(20))
         crawler.upsert_event(self.event(10))

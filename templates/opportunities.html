@@ -6,7 +6,7 @@
   <div>
     <div class="eyebrow">Scoring</div>
     <h1>Opportunités de prix</h1>
-    <p>Billets gratuits, hausses observées et prochains paliers de prix comparables.</p>
+    <p>Billets gratuits, tarifs early bird, hausses observées et prochains paliers de prix comparables.</p>
   </div>
 </section>
 <section class="panel">
@@ -21,6 +21,7 @@
     <select id="opp-type" class="toolbar-select">
       <option value="">Tous les types</option>
       <option value="FREE">Billet gratuit</option>
+      <option value="EARLY_BIRD">Early bird</option>
       <option value="PRICE_INCREASE">Hausse observée</option>
       <option value="PRICE_STEP_UP">Prochain palier</option>
     </select>
@@ -32,8 +33,8 @@
     </select>
     <select id="opp-early" class="toolbar-select">
       <option value="">Toutes les détections</option>
-      <option value="yes">Gratuit détecté tôt</option>
-      <option value="no">Sans détection anticipée</option>
+      <option value="yes">Produit early bird</option>
+      <option value="no">Sans early bird</option>
     </select>
     <select id="opp-recent" class="toolbar-select">
       <option value="">Toutes les anciennetés</option>
@@ -55,7 +56,7 @@
       </thead>
       <tbody>
         {% for r in rows %}
-        <tr data-event="{{ (r.event_name or '')|lower }}" data-date="{{ r.event_date or '' }}" data-added="{{ r.added_at or '' }}" data-region="{{ r.region or '' }}" data-product="{{ r.product_name|lower }}" data-price="{{ r.numeric_price or 0 }}" data-status="{{ 'available' if r.is_available in (1, true) else 'unavailable' if r.is_available in (0, false) else 'unknown' }}" data-type="{{ r.opportunity_type }}" data-score="{{ r.opportunity_score or 0 }}" data-early="{{ 'yes' if r.is_early_free_opportunity else 'no' }}" data-recent="{{ 'recent' if r.is_recent else 'old' }}">
+        <tr data-event="{{ (r.event_name or '')|lower }}" data-date="{{ r.event_date or '' }}" data-added="{{ r.added_at or '' }}" data-region="{{ r.region or '' }}" data-product="{{ r.product_name|lower }}" data-price="{{ r.numeric_price or 0 }}" data-status="{{ 'available' if r.is_available in (1, true) else 'unavailable' if r.is_available in (0, false) else 'unknown' }}" data-type="{{ r.opportunity_type }}" data-score="{{ r.opportunity_score or 0 }}" data-early="{{ 'yes' if r.is_early_bird else 'no' }}" data-recent="{{ 'recent' if r.is_recent else 'old' }}">
           <td>
             <div class="event-cell">{{ event_flyer(r.event_image, r.event_name) }}<div><a href="/event/{{ r.event_id }}">{{ r.event_name }}</a>
             {% if r.event_subtitle %}<div class="cell-sub">{{ r.event_subtitle }}</div>{% endif %}
@@ -70,6 +71,7 @@
           <td>{% if r.opportunity_type == 'PRICE_INCREASE' %}<span class="badge badge-danger">+{{ '%.2f'|format(r.increase_amount or 0) }} €</span>{% elif r.opportunity_type == 'PRICE_STEP_UP' %}<span class="badge badge-warning">prochain +{{ '%.2f'|format(r.increase_amount or 0) }} €{% if r.increase_percent is not none %} ({{ '%.1f'|format(r.increase_percent) }} %){% endif %}</span>{% else %}—{% endif %}</td>
           <td>
             {% if r.is_early_free_opportunity %}<span class="badge badge-success">Early free</span>{% endif %}
+            {% if r.is_early_bird %}<span class="badge badge-success">Early bird</span>{% endif %}
             {% if r.is_recent %}<span class="badge badge-warning">Recent</span>{% endif %}
             {% if r.is_available in (1, true) %}<span class="badge badge-info">Available</span>{% elif r.is_available in (0, false) %}<span class="badge badge-danger">Unavailable</span>{% else %}<span class="badge">Unknown</span>{% endif %}
           </td>
