@@ -23,6 +23,20 @@ from opportunity_scoring import classify_product
 
 
 class BizoukExtractionTests(unittest.TestCase):
+    def test_event_image_uses_exact_bizouk_hero_flyer_src(self):
+        expected = (
+            "https://data-prod.bizouk.com/events/flyers/12/97/46/resized/"
+            "129746_1ef2cd516ec4c09c21b60f96c5d2f6e3_800x1067_auto_97.jpg"
+        )
+        soup = BeautifulSoup(f"""
+          <meta property="og:image" content="https://img.example/social-crop.jpg">
+          <div class="evh-hero-flyer is-portrait" id="evh-hero-flyer">
+            <img src="{expected}" alt="Pako Land - Affiche" loading="eager">
+          </div>
+        """, "html.parser")
+
+        self.assertEqual(extract_event_image(soup), expected)
+
     def test_event_image_prefers_original_asset_without_rewriting_it(self):
         soup = BeautifulSoup("""
           <meta property="og:image" content="/media/flyer.jpg?fit=crop&amp;width=600">

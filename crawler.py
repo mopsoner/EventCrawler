@@ -327,6 +327,13 @@ def extract_website(text):
 
 
 def extract_event_image(soup, base_url=BIZOUK_BASE_URL):
+    # Bizouk exposes the exact flyer displayed by the event page in this
+    # stable hero container. Store that ``src`` as-is instead of substituting
+    # a social preview, a thumbnail, or a reconstructed URL.
+    hero_flyer = soup.select_one("#evh-hero-flyer img[src], .evh-hero-flyer img[src]")
+    if hero_flyer:
+        return urljoin(base_url, hero_flyer.get("src"))
+
     # Prefer links explicitly exposed as the original/full-size asset.  The
     # regular ``src`` often points at a thumbnail generated for the page and
     # can therefore already be cropped before we ever store it.
@@ -917,7 +924,10 @@ def build_event_from_item(item, session=None):
     products = extract_products_from_dom(soup, source) or extract_products_from_jsonld(json_event or {}, source)
     title = soup.title.get_text(" ", strip=True) if soup.title else url
     name = structured.get("name") or header["name"] or normalize_text(title)
-    image = structured.get("image") or extract_event_image(soup, base_url=BIZOUK_BASE_URL)
+    # The hero's <img src> is Bizouk's canonical displayed flyer. JSON-LD can
+    # point to a differently cropped social rendition, so use it only if the
+    # page does not contain the hero flyer.
+    image = extract_event_image(soup, base_url=BIZOUK_BASE_URL) or structured.get("image")
     description = extract_description(soup, lines) or structured.get("description")
     raw_city = structured.get("city") or header.get("city")
     city = normalize_guadeloupe_city(raw_city)
