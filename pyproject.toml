@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "eventcrawler"
 version = "0.1.0"
@@ -7,4 +11,23 @@ dependencies = [
     "beautifulsoup4>=4.14.3",
     "flask>=3.1.3",
     "requests>=2.33.1",
+]
+
+# This project intentionally uses standalone modules at the repository root.
+# Declaring them explicitly prevents setuptools from mistaking the adjacent
+# static/ and templates/ asset directories for Python packages.
+[tool.setuptools]
+py-modules = [
+    "ai_automation",
+    "app",
+    "bizouk_quality",
+    "booking_jobs",
+    "config_store",
+    "crawler",
+    "main",
+    "opportunity_scoring",
+    "scheduler",
+    "security",
+    "source_profiles",
+    "storage",
 ]
