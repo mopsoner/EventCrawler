@@ -327,11 +327,37 @@ def extract_website(text):
 
 
 def extract_event_image(soup, base_url=BIZOUK_BASE_URL):
-    meta = soup.find("meta", attrs={"property": "og:image"})
-    if meta and meta.get("content"):
-        return urljoin(base_url, meta.get("content"))
+    # Bizouk exposes the exact flyer displayed by the event page in this
+    # stable hero container. Store that ``src`` as-is instead of substituting
+    # a social preview, a thumbnail, or a reconstructed URL.
+    hero_flyer = soup.select_one("#evh-hero-flyer img[src], .evh-hero-flyer img[src]")
+    if hero_flyer:
+        return urljoin(base_url, hero_flyer.get("src"))
+
+    # Prefer links explicitly exposed as the original/full-size asset.  The
+    # regular ``src`` often points at a thumbnail generated for the page and
+    # can therefore already be cropped before we ever store it.
+    original_attributes = ("data-original", "data-full", "data-full-src", "data-image")
     for img in soup.find_all("img"):
-        src = img.get("src") or ""
+        src = next((img.get(attr) for attr in original_attributes if img.get(attr)), "")
+        if not src:
+            continue
+        return urljoin(base_url, src)
+
+    # Social metadata normally references the source flyer rather than a
+    # responsive display derivative.  Keep its URL byte-for-byte (apart from
+    # resolving a relative URL): query parameters are intentionally retained.
+    for selector in (
+        {"property": "og:image:secure_url"},
+        {"property": "og:image"},
+        {"name": "twitter:image"},
+    ):
+        meta = soup.find("meta", attrs=selector)
+        if meta and meta.get("content"):
+            return urljoin(base_url, meta.get("content"))
+
+    for img in soup.find_all("img"):
+        src = img.get("src") or img.get("data-src") or ""
         if not src:
             continue
         full = urljoin(base_url, src)
@@ -808,7 +834,21 @@ def jsonld_event_fields(json_event):
         organizer = organizer[0] if organizer else {}
     image = json_event.get("image")
     if isinstance(image, list):
-        image = image[0] if image else None
+        # Schema.org permits several renditions. Prefer an explicitly named
+        # original/full-size rendition, then the largest declared rendition,
+        # instead of blindly keeping the first (often a cropped thumbnail).
+        def image_rank(candidate):
+            if not isinstance(candidate, dict):
+                return (0, 0)
+            label = " ".join(str(candidate.get(key) or "") for key in ("name", "caption", "@id")).lower()
+            original = int(any(word in label for word in ("original", "full", "source")))
+            try:
+                area = int(candidate.get("width") or 0) * int(candidate.get("height") or 0)
+            except (TypeError, ValueError):
+                area = 0
+            return (original, area)
+
+        image = max(image, key=image_rank) if image else None
     if isinstance(image, dict):
         image = image.get("url") or image.get("contentUrl")
     return {
@@ -884,7 +924,10 @@ def build_event_from_item(item, session=None):
     products = extract_products_from_dom(soup, source) or extract_products_from_jsonld(json_event or {}, source)
     title = soup.title.get_text(" ", strip=True) if soup.title else url
     name = structured.get("name") or header["name"] or normalize_text(title)
-    image = structured.get("image") or extract_event_image(soup, base_url=BIZOUK_BASE_URL)
+    # The hero's <img src> is Bizouk's canonical displayed flyer. JSON-LD can
+    # point to a differently cropped social rendition, so use it only if the
+    # page does not contain the hero flyer.
+    image = extract_event_image(soup, base_url=BIZOUK_BASE_URL) or structured.get("image")
     description = extract_description(soup, lines) or structured.get("description")
     raw_city = structured.get("city") or header.get("city")
     city = normalize_guadeloupe_city(raw_city)

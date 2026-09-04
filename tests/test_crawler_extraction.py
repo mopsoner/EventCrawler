@@ -10,6 +10,7 @@ from crawler import (
     extract_contact_info,
     extract_description,
     extract_header_fields,
+    extract_event_image,
     extract_jsonld_event,
     extract_products_from_dom,
     extract_products_from_jsonld,
@@ -22,6 +23,42 @@ from opportunity_scoring import classify_product
 
 
 class BizoukExtractionTests(unittest.TestCase):
+    def test_event_image_uses_exact_bizouk_hero_flyer_src(self):
+        expected = (
+            "https://data-prod.bizouk.com/events/flyers/12/97/46/resized/"
+            "129746_1ef2cd516ec4c09c21b60f96c5d2f6e3_800x1067_auto_97.jpg"
+        )
+        soup = BeautifulSoup(f"""
+          <meta property="og:image" content="https://img.example/social-crop.jpg">
+          <div class="evh-hero-flyer is-portrait" id="evh-hero-flyer">
+            <img src="{expected}" alt="Pako Land - Affiche" loading="eager">
+          </div>
+        """, "html.parser")
+
+        self.assertEqual(extract_event_image(soup), expected)
+
+    def test_event_image_prefers_original_asset_without_rewriting_it(self):
+        soup = BeautifulSoup("""
+          <meta property="og:image" content="/media/flyer.jpg?fit=crop&amp;width=600">
+          <img src="/media/thumbnail.jpg?fit=crop" data-original="/media/flyer.jpg?token=abc&amp;quality=100">
+        """, "html.parser")
+
+        self.assertEqual(
+            extract_event_image(soup, "https://events.example"),
+            "https://events.example/media/flyer.jpg?token=abc&quality=100",
+        )
+
+    def test_event_image_keeps_social_image_query_parameters(self):
+        soup = BeautifulSoup(
+            '<meta property="og:image" content="https://img.example/flyer.jpg?signature=abc&amp;version=4">',
+            "html.parser",
+        )
+
+        self.assertEqual(
+            extract_event_image(soup),
+            "https://img.example/flyer.jpg?signature=abc&version=4",
+        )
+
     def test_product_identity_does_not_change_with_price(self):
         self.assertEqual(
             stable_product_key("bizouk", "Single entry", 10),
@@ -70,6 +107,17 @@ class BizoukExtractionTests(unittest.TestCase):
         self.assertEqual(fields["city"], "Le Gosier")
         self.assertEqual(fields["subtitle"], "Beach Team")
         self.assertEqual(fields["image"], "https://img.example/event.jpg")
+
+    def test_jsonld_uses_largest_image_rendition_instead_of_thumbnail(self):
+        fields = jsonld_event_fields({
+            "@type": "Event",
+            "image": [
+                {"url": "https://img.example/cropped.jpg", "width": 300, "height": 300},
+                {"contentUrl": "https://img.example/original.jpg?signature=xyz", "width": 1600, "height": 2400},
+            ],
+        })
+
+        self.assertEqual(fields["image"], "https://img.example/original.jpg?signature=xyz")
 
     def test_page_without_server_rendered_offers_needs_browser(self):
         soup = BeautifulSoup('<h1>Sunday Beach</h1><script type="application/ld+json">{"@type":"Event","name":"Sunday Beach"}</script>', "html.parser")
