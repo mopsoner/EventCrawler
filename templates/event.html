@@ -16,7 +16,7 @@
       <div><span class="meta-label">Phone</span><div>{{ event.contact_phone or '—' }}</div></div>
       <div><span class="meta-label">Email</span><div>{{ event.contact_email or '—' }}</div></div>
       <div><span class="meta-label">Website</span><div>{% if event.contact_website %}<a href="{{ event.contact_website }}">{{ event.contact_website }}</a>{% else %}—{% endif %}</div></div>
-      <div><span class="meta-label">Source</span><div><a href="{{ event.event_url }}">Open event page</a></div></div>
+      <div><span class="meta-label">Source</span><div><a href="{{ event.event_url }}" target="_blank" rel="noopener noreferrer">Open event page</a></div></div>
     </div>
     <div class="actions-row">
       <form method="post" action="/event/{{ event.id }}/watchlist"><button class="btn btn-secondary" type="submit">{% if event.is_watchlisted %}Remove watchlist{% else %}Add to watchlist{% endif %}</button></form>

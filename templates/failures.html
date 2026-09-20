@@ -32,7 +32,7 @@
       <tbody>
         {% for r in failures %}
         <tr data-event="{{ (r.event_url or '')|lower }}" data-product="{{ (r.product_name or '')|lower }}" data-step="{{ (r.step_name or '')|lower }}" data-intent="{{ r.intent or '' }}" data-status="{{ r.status or '' }}" data-created="{{ r.created_at or '' }}">
-          <td><a href="{{ r.event_url }}">{{ r.event_url }}</a></td>
+          <td><a href="{{ r.event_url }}" target="_blank" rel="noopener noreferrer">{{ r.event_url }}</a></td>
           <td>{{ r.product_name or '—' }}</td>
           <td>{{ r.step_name or '—' }}</td>
           <td>{{ r.intent or '—' }}</td>

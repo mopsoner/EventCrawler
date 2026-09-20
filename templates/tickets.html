@@ -57,7 +57,7 @@
           <td>{{ r.email }}</td>
           <td><span class="badge {% if r.status == 'confirmed' %}badge-success{% elif r.status == 'submitted_unconfirmed' %}badge-warning{% endif %}">{{ r.status }}</span></td>
           <td>{{ r.confirmation_text or '—' }}</td>
-          <td><a href="{{ r.event_url }}" class="text-link">Open</a></td>
+          <td><a href="{{ r.event_url }}" class="text-link" target="_blank" rel="noopener noreferrer">Open</a></td>
         </tr>
         {% endfor %}
       </tbody>
