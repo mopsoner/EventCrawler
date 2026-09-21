@@ -100,6 +100,7 @@ def init_db():
             region TEXT,
             name TEXT,
             subtitle TEXT,
+            organizer_name TEXT,
             description TEXT,
             event_date TEXT,
             city TEXT,
@@ -176,6 +177,7 @@ def init_db():
         ("contact_website", "contact_website TEXT"),
         ("event_image", "event_image TEXT"),
         ("subtitle", "subtitle TEXT"),
+        ("organizer_name", "organizer_name TEXT"),
         ("description", "description TEXT"),
         ("manual_status", "manual_status TEXT"),
         ("private_note", "private_note TEXT"),
@@ -563,6 +565,33 @@ def extract_header_fields(soup):
     return {"name": name, "subtitle": subtitle, "event_date": date_text, "city": city, "address": address}
 
 
+def extract_organizer_name(soup):
+    """Extract Bizouk's organizer label without confusing it with contact data."""
+    selectors = (
+        "[itemprop='organizer'] [itemprop='name']",
+        "[itemprop='organizer'][content]",
+        ".evh-organizer-name",
+        ".evh-contact-panel .organizer-name",
+        "[class*='organizer'] [class*='name']",
+    )
+    for selector in selectors:
+        node = soup.select_one(selector)
+        if not node:
+            continue
+        value = node.get("content") or node.get_text(" ", strip=True)
+        value = normalize_text(value)
+        if value:
+            return value
+    for text_node in soup.find_all(string=re.compile(r"^\s*(?:organis(?:é|e)e?\s+par|organized\s+by)\s*[:\-]?", re.I)):
+        value = re.sub(r"^\s*(?:organis(?:é|e)e?\s+par|organized\s+by)\s*[:\-]?\s*", "", str(text_node), flags=re.I)
+        if normalize_text(value):
+            return normalize_text(value)
+        sibling = text_node.parent.find_next_sibling() if text_node.parent else None
+        if sibling and normalize_text(sibling.get_text(" ", strip=True)):
+            return normalize_text(sibling.get_text(" ", strip=True))
+    return None
+
+
 def extract_contact_info(soup, lines):
     panel = soup.select_one(".evh-contact-panel")
     if panel:
@@ -857,7 +886,7 @@ def jsonld_event_fields(json_event):
         "description": normalize_text(json_event.get("description"))[:4000] or None,
         "event_date": clean_text(json_event.get("startDate")) or format_kiwol_event_date(json_event),
         "event_end_date": clean_text(json_event.get("endDate")),
-        "subtitle": normalize_text(organizer.get("name")) if isinstance(organizer, dict) else None,
+        "organizer_name": normalize_text(organizer.get("name")) if isinstance(organizer, dict) else None,
         "city": normalize_text(address.get("addressLocality")) if isinstance(address, dict) else None,
         "address": normalize_text(address.get("streetAddress")) if isinstance(address, dict) else None,
         "venue": normalize_text(location.get("name")) if isinstance(location, dict) else None,
@@ -893,7 +922,7 @@ def build_kiwol_event_from_item(item, session=None):
     image = extract_event_image(soup, base_url=KIWOL_BASE_URL)
     all_text = "\n".join(lines)
     contact = {"contact_phone": extract_phone(all_text), "contact_email": extract_email(all_text), "contact_website": None}
-    return {"source": source, "event_url": url, "event_url_normalized": normalize_event_url(url, source), "event_slug": slug, "event_external_id": external_id, "region": region, "name": name or item.get("list_title") or url, "subtitle": organizer_name or item.get("list_location"), "description": description, "event_date": event_date, "city": city or item.get("list_location"), "address": street or venue_name, "contact_phone": contact["contact_phone"], "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": image, "products": products, "score": score_event(name, region, products, contact, bool(image), event_date)}
+    return {"source": source, "event_url": url, "event_url_normalized": normalize_event_url(url, source), "event_slug": slug, "event_external_id": external_id, "region": region, "name": name or item.get("list_title") or url, "subtitle": None, "organizer_name": organizer_name, "description": description, "event_date": event_date, "city": city or item.get("list_location"), "address": street or venue_name, "contact_phone": contact["contact_phone"], "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": image, "products": products, "score": score_event(name, region, products, contact, bool(image), event_date)}
 
 
 def build_event_from_item(item, session=None):
@@ -937,8 +966,9 @@ def build_event_from_item(item, session=None):
     event_date = normalize_event_date(structured.get("event_date") or header.get("event_date"), region=region, city=city)
     event_end_date = normalize_event_date(structured.get("event_end_date"), region=region, city=city)
     address = structured.get("address") or structured.get("venue") or header.get("address")
-    subtitle = clean_subtitle(header.get("subtitle") or structured.get("subtitle"))
-    event = {"source": source, "event_url": url, "event_url_normalized": normalize_event_url(url, source), "event_slug": slug, "event_external_id": external_id, "region": region, "name": clean_text(name), "subtitle": subtitle, "description": clean_text(description, multiline=True), "event_date": event_date, "event_end_date": event_end_date, "city": city, "address": clean_text(address), "contact_phone": normalize_phone(contact["contact_phone"]), "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": image, "products": products, "score": score_event(name, region, products, contact, bool(image), event_date)}
+    subtitle = clean_subtitle(header.get("subtitle"))
+    organizer_name = structured.get("organizer_name") or extract_organizer_name(soup)
+    event = {"source": source, "event_url": url, "event_url_normalized": normalize_event_url(url, source), "event_slug": slug, "event_external_id": external_id, "region": region, "name": clean_text(name), "subtitle": subtitle, "organizer_name": clean_text(organizer_name), "description": clean_text(description, multiline=True), "event_date": event_date, "event_end_date": event_end_date, "city": city, "address": clean_text(address), "contact_phone": normalize_phone(contact["contact_phone"]), "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": image, "products": products, "score": score_event(name, region, products, contact, bool(image), event_date)}
     return validate_bizouk_event(event)
 
 
@@ -977,9 +1007,9 @@ def upsert_event(event):
     row = find_existing_event(cur, event)
     if row:
         event_id = row["id"]
-        cur.execute("UPDATE events SET source=?, event_url=?, event_url_normalized=?, event_external_id=?, event_slug=?, region=?, name=?, subtitle=?, description=?, event_date=?, event_end_date=?, city=?, address=?, contact_phone=?, contact_email=?, contact_website=?, event_image=?, score=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?", (source, event.get("event_url"), event.get("event_url_normalized"), event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("subtitle"), event.get("description"), event.get("event_date"), event.get("event_end_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0), event_id))
+        cur.execute("UPDATE events SET source=?, event_url=?, event_url_normalized=?, event_external_id=?, event_slug=?, region=?, name=?, subtitle=?, organizer_name=?, description=?, event_date=?, event_end_date=?, city=?, address=?, contact_phone=?, contact_email=?, contact_website=?, event_image=?, score=?, last_seen_at=CURRENT_TIMESTAMP WHERE id=?", (source, event.get("event_url"), event.get("event_url_normalized"), event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("subtitle"), event.get("organizer_name"), event.get("description"), event.get("event_date"), event.get("event_end_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0), event_id))
     else:
-        cur.execute("INSERT INTO events(source, event_url, event_url_normalized, event_external_id, event_slug, region, name, subtitle, description, event_date, event_end_date, city, address, contact_phone, contact_email, contact_website, event_image, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (source, event.get("event_url"), event.get("event_url_normalized"), event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("subtitle"), event.get("description"), event.get("event_date"), event.get("event_end_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0)))
+        cur.execute("INSERT INTO events(source, event_url, event_url_normalized, event_external_id, event_slug, region, name, subtitle, organizer_name, description, event_date, event_end_date, city, address, contact_phone, contact_email, contact_website, event_image, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (source, event.get("event_url"), event.get("event_url_normalized"), event.get("event_external_id"), event.get("event_slug"), event.get("region"), event.get("name"), event.get("subtitle"), event.get("organizer_name"), event.get("description"), event.get("event_date"), event.get("event_end_date"), event.get("city"), event.get("address"), event.get("contact_phone"), event.get("contact_email"), event.get("contact_website"), event.get("event_image"), event.get("score", 0)))
         event_id = cur.lastrowid
     for p in event.get("products", []):
         product_name = p.get("product_name") or "Billet"
@@ -1063,6 +1093,26 @@ def run():
                 errors += 1
                 report.counts["http_errors"] += 1
                 log_crawl_error(crawl_run_id, "region", region, exc)
+        # Schema migrations cannot infer an organizer from the old subtitle.
+        # Requeue legacy Bizouk rows until a successful crawl fills the new field,
+        # including events no longer present on a region's current listing.
+        c = conn()
+        try:
+            legacy_items = [dict(row) for row in c.execute(
+                """SELECT event_url AS url, region, event_slug AS slug,
+                          event_external_id AS external_id, 'bizouk' AS source
+                   FROM events
+                   WHERE COALESCE(source, 'bizouk')='bizouk'
+                     AND NULLIF(TRIM(organizer_name), '') IS NULL"""
+            ).fetchall()]
+        finally:
+            c.close()
+        known = {(item.get("source") or detect_source(item.get("url")), normalize_event_url(item.get("url"), item.get("source") or detect_source(item.get("url")))) for item in all_items}
+        for item in legacy_items:
+            identity = ("bizouk", normalize_event_url(item["url"], "bizouk"))
+            if identity not in known:
+                all_items.append(item)
+                known.add(identity)
         report.counts["duplicates"] = len(all_items) - len({(item.get("source"), item.get("external_id")) for item in all_items})
         report.counts["pages_processed"] = len(all_items)
         update_crawl_run(crawl_run_id, events_queued=len(all_items))
