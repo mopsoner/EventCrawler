@@ -1,4 +1,5 @@
 import copy
+import json
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ def database(tmp_path, monkeypatch):
     monkeypatch.setattr(crawler, "DB_PATH", path)
     monkeypatch.setattr(app, "DB_PATH", path)
     crawler.init_db()
+    app.init_db()
     return path
 
 
@@ -67,3 +69,54 @@ def test_worker_passes_profile_and_busy_launcher_keeps_pending(database, monkeyp
     with app.conn() as c:
         row = c.execute("SELECT state, attempt_count FROM booking_jobs").fetchone()
     assert tuple(row) == ("pending", 0)
+
+
+def test_worker_persists_confirmed_booking_as_ticket(database, tmp_path, monkeypatch):
+    monkeypatch.setattr(crawler, "CONFIG", {"booking_profile": {"auto_book_new_free_products": True}})
+    crawler.upsert_event(event({"product_name": "Free confirmed", "numeric_price": 0, "is_free": True, "is_available": True}))
+    profile = copy.deepcopy(DEFAULT_CONFIG)
+    profile["booking_profile"].update(auto_book_new_free_products=True, default_ticket_count=2, email="book@example.test")
+    state_path = tmp_path / "booking_state.json"
+    monkeypatch.setattr(app, "BOOKING_STATE_PATH", state_path)
+    monkeypatch.setattr(app, "load_config", lambda: profile)
+    monkeypatch.setattr(app, "booking_is_running", lambda: False)
+
+    def confirmed_launcher(*_args):
+        state_path.write_text(json.dumps({
+            "status": "confirmed",
+            "event_url": "https://www.kiwol.com/events/durable-test",
+            "product_name": "Free confirmed",
+            "ticket_count": 2,
+            "email": "book@example.test",
+            "started_at": "2026-09-21T10:00:00",
+            "finished_at": "2026-09-21T10:00:10",
+            "confirmation_text": "Réservation confirmée",
+        }), encoding="utf-8")
+        return True
+
+    assert app.process_booking_job_once(confirmed_launcher) is True
+    with app.conn() as c:
+        job = c.execute("SELECT state, attempt_count FROM booking_jobs").fetchone()
+        ticket = c.execute("SELECT product_name, ticket_count, email, status FROM tickets").fetchone()
+    assert tuple(job) == ("confirmed", 1)
+    assert tuple(ticket) == ("Free confirmed", 2, "book@example.test", "confirmed")
+
+
+def test_list_tickets_reconciles_latest_completed_booking(database, tmp_path, monkeypatch):
+    state_path = tmp_path / "booking_state.json"
+    monkeypatch.setattr(app, "BOOKING_STATE_PATH", state_path)
+    state_path.write_text(json.dumps({
+        "status": "submitted_unconfirmed",
+        "event_url": "https://www.kiwol.com/events/durable-test",
+        "product_name": "Free submitted",
+        "ticket_count": 1,
+        "email": "book@example.test",
+        "started_at": "2026-09-21T11:00:00",
+        "finished_at": "2026-09-21T11:00:10",
+    }), encoding="utf-8")
+
+    rows = app.list_tickets()
+
+    assert len(rows) == 1
+    assert rows[0]["product_name"] == "Free submitted"
+    assert rows[0]["status"] == "submitted_unconfirmed"

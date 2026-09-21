@@ -771,6 +771,10 @@ def list_free(limit=None):
 
 
 def list_tickets(limit=None):
+    # Reconcile the last completed booking before reading the table.  This is
+    # especially important when /tickets is the first page opened after the
+    # standalone booking process finishes.
+    sync_ticket_from_booking_state()
     c = conn()
     sql = """SELECT t.*, e.event_image AS event_image
              FROM tickets t LEFT JOIN events e ON e.id = t.event_id
@@ -1094,6 +1098,10 @@ def process_booking_job_once(launcher=launch_booking_prepare):
     if BOOKING_PROCESS is not None:
         BOOKING_PROCESS.wait()
     result = read_booking_state(raw=True)
+    # The automatic worker reads the state in raw mode to avoid unrelated
+    # filesystem synchronization, so persist its result explicitly before a
+    # later booking can overwrite booking_state.json.
+    sync_ticket_from_booking_state(result)
     if result.get("status") == "confirmed":
         update_booking_job(job["id"], "confirmed", increment_attempt=True)
     else:
