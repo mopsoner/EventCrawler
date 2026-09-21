@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -154,6 +155,7 @@ def init_db():
             event_url TEXT UNIQUE NOT NULL,
             region TEXT,
             name TEXT,
+            organizer_name TEXT,
             event_date TEXT,
             city TEXT,
             address TEXT,
@@ -274,6 +276,7 @@ def init_db():
     ensure_column(cur, "events", "contact_website", "contact_website TEXT")
     ensure_column(cur, "events", "event_image", "event_image TEXT")
     ensure_column(cur, "events", "subtitle", "subtitle TEXT")
+    ensure_column(cur, "events", "organizer_name", "organizer_name TEXT")
     ensure_column(cur, "events", "description", "description TEXT")
     ensure_column(cur, "events", "manual_status", "manual_status TEXT")
     ensure_column(cur, "events", "private_note", "private_note TEXT")
@@ -655,6 +658,15 @@ def normalize_website(value):
 
 
 def organizer_identity(row):
+    organizer_name = (row.get("organizer_name") or "").strip()
+    if organizer_name:
+        normalized_name = "".join(
+            char for char in unicodedata.normalize("NFKD", organizer_name.casefold())
+            if not unicodedata.combining(char)
+        )
+        normalized_name = re.sub(r"[^a-z0-9]+", " ", normalized_name).strip()
+        if normalized_name:
+            return (f"name:{normalized_name}", "name", organizer_name)
     phone = normalize_phone(row.get("contact_phone"))
     if phone:
         return (f"phone:{phone}", "phone", phone)
@@ -702,7 +714,7 @@ def stats():
 
 def list_events(limit=None, watchlist_only=False):
     c = conn()
-    select_cols = "id, event_url, region, name, subtitle, description, event_date, city, address, contact_phone, contact_email, contact_website, first_seen_at, score, manual_status, private_note, is_watchlisted"
+    select_cols = "id, event_url, region, name, subtitle, organizer_name, description, event_date, city, address, contact_phone, contact_email, contact_website, first_seen_at, score, manual_status, private_note, is_watchlisted"
     if has_column("events", "event_image"):
         select_cols += ", event_image"
     sql = f"SELECT {select_cols} FROM events"
@@ -941,7 +953,10 @@ def list_organizers():
         organizer_key, organizer_type, organizer_value = organizer_identity(event)
         if not organizer_key:
             continue
-        group = groups.setdefault(organizer_key, {"organizer_key": organizer_value, "organizer_type": organizer_type, "sample_event_name": event.get("name"), "events_count": 0, "free_event_count": 0, "last_seen_at": event.get("first_seen_at"), "contact_phone": normalize_phone(event.get("contact_phone")) or event.get("contact_phone"), "contact_email": normalize_email(event.get("contact_email")) or event.get("contact_email"), "contact_website": normalize_website(event.get("contact_website")) or event.get("contact_website")})
+        group = groups.setdefault(organizer_key, {"organizer_key": organizer_key, "organizer_name": event.get("organizer_name") or organizer_value, "organizer_type": organizer_type, "sample_event_name": event.get("name"), "events_count": 0, "free_event_count": 0, "last_seen_at": event.get("first_seen_at"), "contact_phone": normalize_phone(event.get("contact_phone")) or event.get("contact_phone"), "contact_email": normalize_email(event.get("contact_email")) or event.get("contact_email"), "contact_website": normalize_website(event.get("contact_website")) or event.get("contact_website")})
+        for field, normalizer in (("contact_phone", normalize_phone), ("contact_email", normalize_email), ("contact_website", normalize_website)):
+            if not group[field] and event.get(field):
+                group[field] = normalizer(event.get(field)) or event.get(field)
         group["events_count"] += 1
         if event.get("id") in free_event_ids:
             group["free_event_count"] += 1

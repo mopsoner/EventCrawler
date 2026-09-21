@@ -12,6 +12,7 @@ from crawler import (
     extract_header_fields,
     extract_event_image,
     extract_jsonld_event,
+    extract_organizer_name,
     extract_products_from_dom,
     extract_products_from_jsonld,
     jsonld_event_fields,
@@ -105,8 +106,24 @@ class BizoukExtractionTests(unittest.TestCase):
         fields = jsonld_event_fields(event)
         self.assertEqual(event["name"], "Sunday Beach")
         self.assertEqual(fields["city"], "Le Gosier")
-        self.assertEqual(fields["subtitle"], "Beach Team")
+        self.assertEqual(fields["organizer_name"], "Beach Team")
+        self.assertNotIn("subtitle", fields)
         self.assertEqual(fields["image"], "https://img.example/event.jpg")
+
+    def test_saik_static_fixture_keeps_organizer_separate_from_subtitle_and_phone(self):
+        html = (Path(__file__).parent / "fixtures" / "bizouk_saik_concert_live_130491.html").read_text()
+        soup = BeautifulSoup(html, "html.parser")
+        fields = jsonld_event_fields(extract_jsonld_event(soup))
+        header = extract_header_fields(soup)
+        contact = extract_contact_info(soup, [line.strip() for line in soup.get_text("\n", strip=True).splitlines()])
+
+        self.assertEqual(fields["organizer_name"], "LBTM")
+        self.assertEqual(header["subtitle"], "Le concert événement")
+        self.assertEqual(contact["contact_phone"], "+590690123456")
+
+    def test_dom_organizer_is_used_when_jsonld_has_none(self):
+        soup = BeautifulSoup('<div class="evh-organizer-name">LBTM</div>', "html.parser")
+        self.assertEqual(extract_organizer_name(soup), "LBTM")
 
     def test_jsonld_uses_largest_image_rendition_instead_of_thumbnail(self):
         fields = jsonld_event_fields({
