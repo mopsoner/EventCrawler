@@ -6,7 +6,7 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -448,6 +448,24 @@ def fetch_rendered_bizouk_html(url):
     return result.stdout
 
 
+def fetch_rendered_kiwol_html(url):
+    safe_url = validate_external_url(url)
+    helper = Path(__file__).with_name("render_kiwol_page.js")
+    result = subprocess.run(
+        ["node", str(helper), safe_url], capture_output=True, text=True,
+        timeout=max(REQUEST_TIMEOUT, 210), check=True,
+    )
+    return result.stdout
+
+
+def fetch_listing_html(url):
+    # Kiwol's agenda only exposes its remaining events after browser clicks.
+    # Keep the existing static Bizouk listing path unchanged.
+    if detect_source(url) == "kiwol" and urlparse(url).path.rstrip("/") == "/agenda":
+        return fetch_rendered_kiwol_html(url)
+    return fetch_html(url)
+
+
 def bizouk_page_needs_rendering(soup):
     profile = SOURCE_PROFILES["bizouk"]
     has_header = bool(soup.select_one("h1, [itemprop='name'], [class*='event-title']"))
@@ -467,7 +485,14 @@ def extract_event_links(html, start_url=None):
         href = a.get("href") or ""
         if profile.event_path_marker not in href:
             continue
-        full = normalize_event_url(urljoin(profile.base_url, href), source)
+        absolute = urljoin(profile.base_url, href)
+        if source == "kiwol":
+            parsed = urlparse(absolute)
+            if (parsed.scheme != "https" or parsed.hostname not in {"kiwol.com", "www.kiwol.com"}
+                    or parsed.username or parsed.password or parsed.netloc not in {"kiwol.com", "www.kiwol.com"}
+                    or not re.fullmatch(r"/billetterie/\d+/?", parsed.path)):
+                continue
+        full = normalize_event_url(absolute, source)
         ref = parse_event_ref(full, source=source)
         if not ref:
             continue
@@ -481,7 +506,12 @@ def extract_event_links(html, start_url=None):
                 "list_date": normalize_text(date_el.get_text(" ", strip=True)) if date_el else None,
                 "list_location": normalize_text(location_el.get_text(" ", strip=True)) if location_el else None,
             })
-        out[f"{source}:{ref['external_id']}"] = item
+        identity = f"{source}:{ref['external_id']}"
+        if source == "kiwol" and identity in out:
+            # Repeated navigation links must not erase agenda-card metadata.
+            for key in ("list_title", "list_date", "list_location"):
+                item[key] = item.get(key) or out[identity].get(key)
+        out[identity] = item
     return list(out.values())
 
 
@@ -894,35 +924,104 @@ def jsonld_event_fields(json_event):
     }
 
 
+def extract_kiwol_products(json_event):
+    """Keep unknown stock distinct from available, particularly for free tickets."""
+    def offers(value, currency="EUR"):
+        if isinstance(value, list):
+            for child in value:
+                yield from offers(child, currency)
+        elif isinstance(value, dict):
+            currency = value.get("priceCurrency") or currency
+            if "offers" in value:
+                yield from offers(value["offers"], currency)
+            elif "price" in value:
+                yield value, currency
+
+    products = []
+    for offer, currency in offers(json_event.get("offers")):
+        raw_price = offer.get("price")
+        try:
+            price = float(str(raw_price).replace(",", "."))
+        except (TypeError, ValueError):
+            continue
+        if not 0 <= price < float("inf"):
+            continue
+        name = normalize_text(offer.get("name")) or "Billet"
+        stock = str(offer.get("availability") or "").rstrip("/").rsplit("/", 1)[-1].rsplit("#", 1)[-1].lower()
+        available = True if stock in {"instock", "limitedavailability"} else False if stock in {
+            "soldout", "outofstock", "discontinued", "instoreonly"
+        } else None
+        products.append({"source": "kiwol", "product_key": stable_product_key("kiwol", name, price),
+                         "product_name": name, "price_text": price_text_from_value(price, currency),
+                         "numeric_price": price, "is_free": price == 0, "is_available": available})
+    return dedupe_products(products, "kiwol")
+
+
 def build_kiwol_event_from_item(item, session=None):
     source = "kiwol"
     url = normalize_event_url(item["url"], source)
     region = item["region"]
     slug = item.get("slug")
     external_id = item.get("external_id")
-    html = fetch_html(url, session=session)
+    try:
+        html = fetch_html(url, session=session)
+    except requests.HTTPError as exc:
+        if exc.response is None or exc.response.status_code not in {403, 503}:
+            raise
+        html = fetch_rendered_kiwol_html(url)
     raw_soup = BeautifulSoup(html, "html.parser")
     json_event = extract_jsonld_event(raw_soup)
+    if not json_event or not offers_to_list(json_event.get("offers")):
+        raw_soup = BeautifulSoup(fetch_rendered_kiwol_html(url), "html.parser")
+        json_event = extract_jsonld_event(raw_soup)
+    if json_event and isinstance(json_event.get("eventSchedule"), list):
+        json_event = dict(json_event, eventSchedule=next(
+            (value for value in json_event["eventSchedule"] if isinstance(value, dict)), {}
+        ))
+    title = raw_soup.find("title")
+    if title and any(marker in title.get_text().casefold() for marker in ("just a moment", "access denied", "404", "captcha")):
+        raise EventValidationError(["Kiwol: anti-bot or error page"])
+    fields = jsonld_event_fields(json_event)
+    if json_event and json_event.get("url"):
+        json_ref = parse_event_ref(normalize_event_url(json_event["url"], source), source)
+        expected_ref = parse_event_ref(url, source)
+        if json_ref and expected_ref and json_ref["external_id"] != expected_ref["external_id"]:
+            raise EventValidationError(["Kiwol: event identity does not match URL"])
     soup = remove_noise(raw_soup)
     lines = lines_from_soup(soup)
     h1 = soup.find("h1")
+    if not h1 and not fields.get("name"):
+        raise EventValidationError(["Kiwol: missing event identity"])
     name = normalize_text(h1.get_text(" ", strip=True)) if h1 else None
     if not name and json_event:
         name = normalize_text(str(json_event.get("name") or "").replace("| Kiwol", ""))
     description = normalize_text(json_event.get("description"))[:4000] if json_event and json_event.get("description") else extract_description(soup, lines)
-    location = json_event.get("location") if isinstance(json_event, dict) else {}
-    address_data = location.get("address") if isinstance(location, dict) else {}
-    venue_name = normalize_text(location.get("name")) if isinstance(location, dict) else None
-    street = normalize_text(address_data.get("streetAddress")) if isinstance(address_data, dict) else None
-    city = normalize_text(address_data.get("addressLocality")) if isinstance(address_data, dict) else None
-    organizer = json_event.get("organizer") if isinstance(json_event, dict) else {}
-    organizer_name = normalize_text(organizer.get("name")) if isinstance(organizer, dict) else None
-    products = extract_products_from_jsonld(json_event or {}, source) or extract_products_from_dom(soup, source)
+    venue_name, street, city = fields.get("venue"), fields.get("address"), fields.get("city")
+    organizer_node = soup.select_one(".module-organizer-card-title")
+    organizer_name = normalize_text(organizer_node.get_text(" ", strip=True)) if organizer_node else fields.get("organizer_name")
+    products = extract_kiwol_products(json_event or {}) or extract_products_from_dom(soup, source)
     event_date = format_kiwol_event_date(json_event or {}, item.get("list_date"))
-    image = extract_event_image(soup, base_url=KIWOL_BASE_URL)
-    all_text = "\n".join(lines)
-    contact = {"contact_phone": extract_phone(all_text), "contact_email": extract_email(all_text), "contact_website": None}
-    return {"source": source, "event_url": url, "event_url_normalized": normalize_event_url(url, source), "event_slug": slug, "event_external_id": external_id, "region": region, "name": name or item.get("list_title") or url, "subtitle": None, "organizer_name": organizer_name, "description": description, "event_date": event_date, "city": city or item.get("list_location"), "address": street or venue_name, "contact_phone": contact["contact_phone"], "contact_email": contact["contact_email"], "contact_website": contact["contact_website"], "event_image": image, "products": products, "score": score_event(name, region, products, contact, bool(image), event_date)}
+    flyer = soup.select_one("main img.ticketing-visual:not(.event-card-visual)")
+    image = (flyer.get("src") if flyer else None) or fields.get("image") or extract_event_image(soup, base_url=KIWOL_BASE_URL)
+    if image:
+        image = urljoin(KIWOL_BASE_URL, image)
+    name = name or item.get("list_title")
+    if not name:
+        raise EventValidationError(["Kiwol: missing event name"])
+    # Structured descriptions include text hidden by the site's "Afficher plus".
+    # Restrict contacts to the event copy, not the site's customer-service footer.
+    contact_text = description or "\n".join(lines)
+    contact = {"contact_phone": extract_phone(contact_text), "contact_email": extract_email(contact_text),
+               "contact_website": extract_website(contact_text)}
+    return {
+        "source": source, "event_url": url, "event_url_normalized": url,
+        "event_slug": slug, "event_external_id": external_id, "region": region,
+        "name": name, "subtitle": None, "organizer_name": organizer_name,
+        "description": description, "event_date": event_date,
+        "event_end_date": fields.get("event_end_date"), "city": city or item.get("list_location"),
+        "address": street or venue_name, **contact, "event_image": image, "products": products,
+        "score": score_event(name, region, products, contact, bool(image), event_date),
+    }
 
 
 def build_event_from_item(item, session=None):
@@ -1084,7 +1183,7 @@ def run():
     try:
         for region, start_url in regions.items():
             try:
-                html = fetch_html(start_url)
+                html = fetch_listing_html(start_url)
                 region_items = extract_event_links(html, start_url=start_url)
                 for item in region_items:
                     item["region"] = region

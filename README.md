@@ -61,6 +61,44 @@ Source-specific URL parsing is centralized in `source_profiles.py`:
 
 The crawler uses those profiles to normalize event URLs, deduplicate events by source/id, and extract links from listing pages.
 
+### Agenda Kiwol
+
+Dans `/config`, ajoutez une région `kiwol_agenda` avec l'URL
+`https://www.kiwol.com/agenda`, puis activez-la et lancez un parcours depuis le
+tableau de bord. Les nouvelles configurations proposent déjà cette entrée,
+désactivée. Les configurations existantes sont conservées. Pour limiter la
+collecte à un territoire, utilisez par exemple
+`https://www.kiwol.com/agenda?location=GP`.
+
+Le parcours Kiwol utilise `render_kiwol_page.js` et Playwright pour actionner les
+contrôles « Afficher plus de résultat », « Charger plus » ou « Voir tous les événements ». Il conserve les lots
+précédents, déduplique les liens `/billetterie/<id>` et signale une erreur si le
+chargement reste bloqué ou dépasse sa limite. Les pages détaillées sont lues en
+HTML, avec rendu navigateur lorsque les données de billetterie manquent. Les
+offres structurées alimentent les mêmes tables, historique de prix, pages de
+billets gratuits, opportunités et file de réservation que les autres sources.
+Un stock non précisé reste inconnu ; il ne déclenche pas une réservation
+automatique. Le parcours de collecte ne clique pas sur les boutons de réservation.
+
+Installez Chromium avec `npm ci` et assurez-vous que les processus Python/Node
+utilisent le même `PLAYWRIGHT_BROWSERS_PATH` si cette variable est définie.
+L'environnement réseau doit permettre `www.kiwol.com`, `api.kiwol.com` (chargement
+de l'agenda), `d27w5wcpsj3982.cloudfront.net` (affiches), ainsi que les
+téléchargements Playwright. Le navigateur doit faire confiance au certificat
+CA du proxy lorsqu'un proxy HTTPS est utilisé ; ne désactivez pas la vérification TLS.
+
+Tests locaux de l'intégration :
+
+```bash
+.venv/bin/python -m pytest tests/test_kiwol_source.py -q
+node --test tests/kiwol_agenda.test.js
+```
+
+Ces tests utilisent des extraits publics capturés sur l'agenda et l'événement
+13402, ainsi que des pages contrôlées pour tester les chargements asynchrones
+dans un vrai navigateur. La vérification du chargement complet sur le site
+nécessite l'accès à son API.
+
 ## HTML/page analysis helper
 
 Use Playwright to inspect current Bizouk/Kiwol pages and save the selectors, headings, event links, body excerpt, and JSON-LD blocks found on each page:

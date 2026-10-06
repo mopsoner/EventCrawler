@@ -15,6 +15,10 @@
     "auto_book_new_free_products": true
   },
   "regions": {
+    "kiwol_agenda": {
+      "enabled": false,
+      "url": "https://www.kiwol.com/agenda"
+    },
     "london": {
       "enabled": false,
       "url": "https://www.bizouk.com/?region=london"

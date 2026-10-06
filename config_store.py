@@ -28,6 +28,7 @@ DEFAULT_CONFIG = {
         "guadeloupe": {"enabled": True, "url": "https://www.bizouk.com/?region=guadeloupe"},
         "paris": {"enabled": True, "url": "https://www.bizouk.com/?region=paris"},
         "rotterdam": {"enabled": True, "url": "https://www.bizouk.com/?region=rotterdam"},
+        "kiwol_agenda": {"enabled": False, "url": "https://www.kiwol.com/agenda"},
     },
 }
 
