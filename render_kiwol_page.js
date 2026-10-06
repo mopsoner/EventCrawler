@@ -23,6 +23,55 @@ async function eventCards(page) {
   }));
 }
 
+async function loadAgendaBatch(page, more, known, progressTimeout) {
+  const pending = new Set();
+  const failures = [];
+  const isAgendaRequest = request => {
+    const url = new URL(request.url());
+    return url.hostname === 'api.kiwol.com' && url.pathname.includes('/agenda/search');
+  };
+  const started = request => { if (isAgendaRequest(request)) pending.add(request); };
+  const finished = request => pending.delete(request);
+  const failed = request => {
+    pending.delete(request);
+    if (isAgendaRequest(request)) failures.push(request.failure()?.errorText || 'requête échouée');
+  };
+  const response = result => {
+    if (isAgendaRequest(result.request()) && !result.ok()) failures.push(`HTTP ${result.status()}`);
+  };
+  page.on('request', started);
+  page.on('requestfinished', finished);
+  page.on('requestfailed', failed);
+  page.on('response', response);
+  try {
+    await more.click();
+    try {
+      await page.waitForFunction(ids => [...document.querySelectorAll('a[href*="/billetterie/"]')].some(a => {
+        const url = new URL(a.href);
+        const match = url.pathname.match(/^\/billetterie\/(\d+)\/?$/);
+        return match && ['kiwol.com', 'www.kiwol.com'].includes(url.hostname) && !ids.includes(match[1]);
+      }), known, { timeout: progressTimeout });
+      return true;
+    } catch (error) {
+      if (error.name !== 'TimeoutError') throw error;
+      if (failures.length) {
+        throw new Error(`Agenda Kiwol : api.kiwol.com/agenda/search : ${[...new Set(failures)].join(', ')}`);
+      }
+      // An empty final batch can remove/disable the load-more control without
+      // adding a link. A disabled control during an outstanding request is not
+      // evidence that the listing is complete.
+      const exhausted = !await more.count() || !await more.isVisible() || await more.isDisabled();
+      if (exhausted && pending.size === 0) return false;
+      throw new Error(`Agenda Kiwol incomplet : aucun nouvel événement après ${progressTimeout / 1000} s (${known.length} événements collectés). ${pending.size ? 'Une requête API est encore en cours.' : 'Le bouton est encore actif : vérifier la réponse API et le JavaScript du site.'}`);
+    }
+  } finally {
+    page.off('request', started);
+    page.off('requestfinished', finished);
+    page.off('requestfailed', failed);
+    page.off('response', response);
+  }
+}
+
 // This only clicks listing controls, never ticket/checkout controls.
 async function collectAgenda(page, { maxLoads = 100, progressTimeout = 15000 } = {}) {
   const collected = new Map();
@@ -41,13 +90,7 @@ async function collectAgenda(page, { maxLoads = 100, progressTimeout = 15000 } =
     if (!more) break;
     if (load >= maxLoads) throw new Error('Agenda Kiwol incomplet : limite de chargement atteinte');
     const known = [...collected.keys()];
-    await more.click();
-    // Wait for actual new events, rather than a fixed delay or an open socket.
-    await page.waitForFunction(ids => [...document.querySelectorAll('a[href*="/billetterie/"]')].some(a => {
-      const url = new URL(a.href);
-      const match = url.pathname.match(/^\/billetterie\/(\d+)\/?$/);
-      return match && ['kiwol.com', 'www.kiwol.com'].includes(url.hostname) && !ids.includes(match[1]);
-    }), known, { timeout: progressTimeout });
+    if (!await loadAgendaBatch(page, more, known, progressTimeout)) break;
   }
   // Retain cards from earlier batches even if the site replaces the list.
   return `${await page.content()}\n<section data-kiwol-collected-events>${[...collected.values()].join('\n')}</section>`;

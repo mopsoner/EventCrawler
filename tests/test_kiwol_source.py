@@ -1,5 +1,6 @@
 """Public Kiwol captures and controlled pages for transport and storage checks."""
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +14,14 @@ from bizouk_quality import EventValidationError
 
 URL = "https://www.kiwol.com/billetterie/13402"
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_browser_failure_reports_node_stderr_in_crawl_error():
+    failure = subprocess.CalledProcessError(1, ["node"], stderr="browserType.launch: Executable doesn't exist")
+    with patch.object(crawler, "validate_external_url", return_value=URL), \
+         patch.object(crawler.subprocess, "run", side_effect=failure):
+        with pytest.raises(RuntimeError, match="Executable doesn't exist"):
+            crawler.fetch_rendered_kiwol_html(URL)
 
 
 def test_captured_kiwol_event_extracts_visible_organizer_original_flyer_and_prices():

@@ -451,10 +451,16 @@ def fetch_rendered_bizouk_html(url):
 def fetch_rendered_kiwol_html(url):
     safe_url = validate_external_url(url)
     helper = Path(__file__).with_name("render_kiwol_page.js")
-    result = subprocess.run(
-        ["node", str(helper), safe_url], capture_output=True, text=True,
-        timeout=max(REQUEST_TIMEOUT, 210), check=True,
-    )
+    try:
+        result = subprocess.run(
+            ["node", str(helper), safe_url], capture_output=True, text=True,
+            timeout=max(REQUEST_TIMEOUT, 210), check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip() or f"Node exited with status {exc.returncode}"
+        raise RuntimeError(f"Rendu Kiwol impossible : {detail[:1600]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"Rendu Kiwol interrompu après {exc.timeout} secondes") from exc
     return result.stdout
 
 
