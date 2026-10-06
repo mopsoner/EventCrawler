@@ -12,6 +12,11 @@
 <section class="panel">
   <div class="toolbar">
     <input id="tickets-search" class="toolbar-input" type="text" placeholder="Rechercher un ticket, un événement, un email…">
+    <select id="tickets-source" class="toolbar-select" aria-label="Source">
+      <option value="">Toutes les sources</option>
+      <option value="bizouk">Bizouk</option>
+      <option value="kiwol">Kiwol</option>
+    </select>
     <select id="tickets-region" class="toolbar-select">
       <option value="">Toutes les régions</option>
       {% for r in rows|map(attribute='region')|reject('equalto', None)|unique|list|sort %}
@@ -43,7 +48,7 @@
       </thead>
       <tbody>
         {% for r in rows %}
-        <tr data-event="{{ (r.event_name or r.event_url)|lower }}" data-date="{{ r.event_date or '' }}" data-booked="{{ r.booked_at or '' }}" data-region="{{ r.region or '' }}" data-product="{{ (r.product_name or '')|lower }}" data-qty="{{ r.ticket_count or 0 }}" data-status="{{ r.status or '' }}" data-period="unknown">
+        <tr data-source="{{ r.source or '' }}" data-event="{{ (r.event_name or r.event_url)|lower }}" data-date="{{ r.event_date or '' }}" data-booked="{{ r.booked_at or '' }}" data-region="{{ r.region or '' }}" data-product="{{ (r.product_name or '')|lower }}" data-qty="{{ r.ticket_count or 0 }}" data-status="{{ r.status or '' }}" data-period="unknown">
           <td>
             <div class="event-cell">{{ event_flyer(r.event_image, r.event_name) }}<div>{% if r.event_id %}<a href="/event/{{ r.event_id }}">{{ r.event_name or r.event_url }}</a>{% else %}{{ r.event_name or r.event_url }}{% endif %}
             <div class="cell-sub"><span class="badge js-period-badge" style="display:none"></span></div>
@@ -115,6 +120,7 @@ initDataTable('tickets-table', {
   searchId: 'tickets-search',
   resetId: 'tickets-reset',
   filters: [
+    {id: 'tickets-source', dataset: 'source'},
     { id: 'tickets-region', dataset: 'region' },
     { id: 'tickets-status', dataset: 'status' },
     { id: 'tickets-period', dataset: 'period' }

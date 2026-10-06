@@ -13,6 +13,11 @@
 <section class="panel">
   <div class="toolbar">
     <input id="events-search" class="toolbar-input" type="text" placeholder="Rechercher un événement, une ville, un contact…">
+    <select id="events-source" class="toolbar-select" aria-label="Source">
+      <option value="">Toutes les sources</option>
+      <option value="bizouk">Bizouk</option>
+      <option value="kiwol">Kiwol</option>
+    </select>
     <select id="events-region" class="toolbar-select">
       <option value="">Toutes les régions</option>
       {% for e in events|map(attribute='region')|unique|list|sort %}
@@ -52,7 +57,7 @@
       </thead>
       <tbody>
         {% for e in events %}
-        <tr data-name="{{ (e.name or e.event_url)|lower }}" data-date="{{ e.event_date or '' }}" data-added="{{ e.added_at or '' }}" data-region="{{ e.region or '' }}" data-city="{{ e.city or '' }}" data-score="{{ e.score or 0 }}" data-period="unknown">
+        <tr data-source="{{ e.source or '' }}" data-name="{{ (e.name or e.event_url)|lower }}" data-date="{{ e.event_date or '' }}" data-added="{{ e.added_at or '' }}" data-region="{{ e.region or '' }}" data-city="{{ e.city or '' }}" data-score="{{ e.score or 0 }}" data-period="unknown">
           <td>
             <div class="event-cell">{{ event_flyer(e.event_image, e.name) }}<div><a href="/event/{{ e.id }}">{{ e.name or e.event_url }}</a>
             {% if e.subtitle %}<div class="cell-sub">{{ e.subtitle }}</div>{% endif %}
@@ -139,6 +144,7 @@ initDataTable('events-table', {
   searchId: 'events-search',
   resetId: 'events-reset',
   filters: [
+    {id: 'events-source', dataset: 'source'},
     { id: 'events-region', dataset: 'region' },
     { id: 'events-city', dataset: 'city' },
     { id: 'events-period', dataset: 'period' }

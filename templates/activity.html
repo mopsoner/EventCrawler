@@ -14,6 +14,11 @@
   <div class="panel-header"><div><h2>Product history</h2></div></div>
   <div class="toolbar">
     <input id="activity-search" class="toolbar-input" type="text" placeholder="Rechercher un événement, un produit, un changement…">
+    <select id="activity-source" class="toolbar-select" aria-label="Source">
+      <option value="">Toutes les sources</option>
+      <option value="bizouk">Bizouk</option>
+      <option value="kiwol">Kiwol</option>
+    </select>
     <select id="activity-change" class="toolbar-select">
       <option value="">Tous les changements</option>
       {% for c in rows|map(attribute='change_type')|unique|list|sort %}
@@ -43,7 +48,7 @@
       </thead>
       <tbody>
         {% for r in rows %}
-        <tr data-event="{{ (r.event_name or '')|lower }}" data-product="{{ (r.product_name or '')|lower }}" data-change="{{ r.change_type or '' }}" data-region="{{ r.region or '' }}" data-recency="{{ r.observed_ago or '' }}" data-old="{{ r.old_price if r.old_price is not none else -1 }}" data-new="{{ r.new_price if r.new_price is not none else -1 }}" data-when="{{ r.observed_at or '' }}">
+        <tr data-source="{{ r.source or '' }}" data-event="{{ (r.event_name or '')|lower }}" data-product="{{ (r.product_name or '')|lower }}" data-change="{{ r.change_type or '' }}" data-region="{{ r.region or '' }}" data-recency="{{ r.observed_ago or '' }}" data-old="{{ r.old_price if r.old_price is not none else -1 }}" data-new="{{ r.new_price if r.new_price is not none else -1 }}" data-when="{{ r.observed_at or '' }}">
           <td><div class="event-cell">{{ event_flyer(r.event_image, r.event_name) }}{% if r.event_id %}<a href="/event/{{ r.event_id }}">{{ r.event_name or '—' }}</a>{% else %}—{% endif %}</div></td>
           <td>{{ r.product_name }}</td>
           <td><span class="badge">{{ r.change_type }}</span></td>
@@ -108,6 +113,7 @@ initDataTable('activity-table', {
   searchId: 'activity-search',
   resetId: 'activity-reset',
   filters: [
+    {id: 'activity-source', dataset: 'source'},
     { id: 'activity-change', dataset: 'change' },
     { id: 'activity-region', dataset: 'region' },
     { id: 'activity-recency', dataset: 'recency' }

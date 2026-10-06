@@ -688,6 +688,13 @@ def has_column(table, column):
 
 def decorate_rows(rows):
     for row in rows:
+        host = (urlparse(row.get("event_url") or "").hostname or "").lower()
+        if host in {"kiwol.com", "www.kiwol.com"}:
+            row["source"] = "kiwol"
+        elif host in {"bizouk.com", "www.bizouk.com"}:
+            row["source"] = "bizouk"
+        elif row.get("source") not in {"bizouk", "kiwol"}:
+            row["source"] = ""
         row["added_at"] = row.get("first_seen_at") or row.get("event_first_seen") or row.get("booked_at")
         row["added_ago"] = time_ago(row.get("added_at"))
         row["is_watchlisted"] = bool(row.get("is_watchlisted", 0))
@@ -813,7 +820,7 @@ def list_failures(limit=200):
             row["ai_suggestion"] = json.loads(row.get("ai_suggestion_json") or "{}")
         except Exception:
             row["ai_suggestion"] = {}
-    return rows
+    return decorate_rows(rows)
 
 
 def list_selector_rules(limit=200):
@@ -881,7 +888,7 @@ def list_activity(limit=100):
     c.close()
     for row in rows:
         row["observed_ago"] = time_ago(row.get("observed_at"))
-    return rows
+    return decorate_rows(rows)
 
 
 def list_crawl_runs(limit=30):

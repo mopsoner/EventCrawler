@@ -12,6 +12,11 @@
   <div class="panel-header"><div><h2>Failures</h2></div></div>
   <div class="toolbar">
     <input id="fail-search" class="toolbar-input" type="text" placeholder="Rechercher un event, produit, étape…">
+    <select id="fail-source" class="toolbar-select" aria-label="Source">
+      <option value="">Toutes les sources</option>
+      <option value="bizouk">Bizouk</option>
+      <option value="kiwol">Kiwol</option>
+    </select>
     <select id="fail-status" class="toolbar-select">
       <option value="">Tous les statuts</option>
       {% for s in failures|map(attribute='status')|reject('equalto', None)|unique|list|sort %}
@@ -31,7 +36,7 @@
       <thead><tr><th data-sort="event">Event</th><th data-sort="product">Product</th><th data-sort="step">Step</th><th data-sort="intent">Intent</th><th data-sort="status">Status</th><th>Suggestion</th><th data-sort="created">When</th><th>Action</th></tr></thead>
       <tbody>
         {% for r in failures %}
-        <tr data-event="{{ (r.event_url or '')|lower }}" data-product="{{ (r.product_name or '')|lower }}" data-step="{{ (r.step_name or '')|lower }}" data-intent="{{ r.intent or '' }}" data-status="{{ r.status or '' }}" data-created="{{ r.created_at or '' }}">
+        <tr data-source="{{ r.source or '' }}" data-event="{{ (r.event_url or '')|lower }}" data-product="{{ (r.product_name or '')|lower }}" data-step="{{ (r.step_name or '')|lower }}" data-intent="{{ r.intent or '' }}" data-status="{{ r.status or '' }}" data-created="{{ r.created_at or '' }}">
           <td><a href="{{ r.event_url }}" target="_blank" rel="noopener noreferrer">{{ r.event_url }}</a></td>
           <td>{{ r.product_name or '—' }}</td>
           <td>{{ r.step_name or '—' }}</td>
@@ -94,6 +99,7 @@ initDataTable('fail-table', {
   searchId: 'fail-search',
   resetId: 'fail-reset',
   filters: [
+    {id: 'fail-source', dataset: 'source'},
     { id: 'fail-status', dataset: 'status' },
     { id: 'fail-intent', dataset: 'intent' }
   ]
