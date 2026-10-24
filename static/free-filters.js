@@ -59,8 +59,32 @@
     return { key: 'future', label: 'Upcoming' };
   }
 
-  function initializeRows(documentRoot = document, currentDate = new Date()) {
-    documentRoot.querySelectorAll('#free-table tbody tr').forEach((row) => {
+  function matchesPeriod(date, period, currentDate = new Date()) {
+    if (!period) return true;
+    if (!date) return period === 'unknown';
+    const today = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate());
+    const eventDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const monday = new Date(today);
+    monday.setDate(today.getDate() - (today.getDay() + 6) % 7);
+    const nextMonday = new Date(monday); nextMonday.setDate(monday.getDate() + 7);
+    const followingMonday = new Date(nextMonday); followingMonday.setDate(nextMonday.getDate() + 7);
+    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+    const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+    const followingMonth = new Date(today.getFullYear(), today.getMonth() + 2, 1);
+    switch (period) {
+      case 'today': return eventDay.getTime() === today.getTime();
+      case 'this_week': return eventDay >= monday && eventDay < nextMonday;
+      case 'next_week': return eventDay >= nextMonday && eventDay < followingMonday;
+      case 'this_month': return eventDay >= monthStart && eventDay < nextMonth;
+      case 'next_month': return eventDay >= nextMonth && eventDay < followingMonth;
+      case 'past': return eventDay < today;
+      case 'future': return eventDay >= today;
+      default: return false;
+    }
+  }
+
+  function initializeRows(documentRoot = document, currentDate = new Date(), selector = '#free-table tbody tr') {
+    documentRoot.querySelectorAll(selector).forEach((row) => {
       const info = periodForDate(parseLooseDate(row.dataset.date || ''), currentDate);
       row.dataset.period = info.key;
       const badge = row.querySelector('.js-period-badge');
@@ -71,5 +95,5 @@
     });
   }
 
-  return { parseLooseDate, periodForDate, initializeRows };
+  return { parseLooseDate, periodForDate, matchesPeriod, initializeRows };
 }));
